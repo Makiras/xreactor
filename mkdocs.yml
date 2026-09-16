@@ -1,0 +1,27 @@
+site_name: XReactor
+site_description: Asyncio-native Python hardware verification framework
+repo_url: https://github.com/Makiras/xreactor
+theme:
+  name: readthedocs
+nav:
+  - Home: index.md
+  - Getting started:
+      - Installation: getting-started/installation.md
+      - First test: getting-started/first-test.md
+      - Examples: examples.md
+  - Guides:
+      - Execution and Backend: guides/execution-and-backend.md
+      - Trigger: guides/triggers.md
+      - Compiled triggers and FSM: guides/compiled-triggers.md
+      - Interfaces and components: guides/interfaces-and-components.md
+      - asyncio and pytest: guides/asyncio-and-pytest.md
+      - Coverage: guides/coverage.md
+  - Reference:
+      - API: reference/api.md
+      - Semantics and limitations: reference/semantics-and-limitations.md
+markdown_extensions:
+  - tables
+  - fenced_code
+  - toc:
+      permalink: true
+strict: true

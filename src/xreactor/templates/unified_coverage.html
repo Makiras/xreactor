@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>@@TITLE@@</title>
+  <style>
+    :root { color-scheme: light dark; --bg:#0b1020; --panel:#151d32; --text:#e8edf7;
+      --muted:#9cabc4; --good:#43d17c; --warn:#f4bb44; --bad:#ff6b6b; --line:#2a3653; }
+    * { box-sizing:border-box; } body { margin:0; font:14px/1.45 ui-sans-serif,system-ui,sans-serif;
+      background:var(--bg); color:var(--text); } main { max-width:1320px; margin:auto; padding:30px; }
+    h1,h2,h3 { margin:.2em 0 .55em; } h1 { font-size:30px; } h2 { margin-top:34px; }
+    .subtitle,.note { color:var(--muted); } .grid { display:grid; gap:14px;
+      grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); margin:20px 0; }
+    .card,details { background:var(--panel); border:1px solid var(--line); border-radius:10px;
+      padding:16px; } .metric { font-size:30px; font-weight:750; margin:5px 0; }
+    .bar { height:9px; background:#27314a; border-radius:99px; overflow:hidden; margin-top:9px; }
+    .bar > i { display:block; height:100%; background:var(--good); }
+    .bar > i.warn { background:var(--warn); } .bar > i.bad { background:var(--bad); }
+    details { margin:12px 0; } summary { cursor:pointer; font-weight:700; }
+    table { width:100%; border-collapse:collapse; margin-top:12px; }
+    th,td { text-align:left; padding:8px 10px; border-bottom:1px solid var(--line); vertical-align:top; }
+    th { color:var(--muted); font-weight:600; } code { font-size:12px; overflow-wrap:anywhere; }
+    .pill { display:inline-block; border:1px solid var(--line); border-radius:99px; padding:2px 8px;
+      margin:2px; color:var(--muted); } .ok { color:var(--good); } .miss { color:var(--bad); }
+    .warning { border-left:4px solid var(--warn); padding-left:12px; }
+    @media (max-width:700px) { main { padding:18px; } .optional { display:none; } }
+    @media print { :root { color-scheme:light; --bg:#fff; --panel:#fff; --text:#111;
+      --muted:#555; --line:#ccc; } main { max-width:none; padding:0; } details { break-inside:avoid; } }
+  </style>
+</head>
+<body><main>
+  <h1 id="title"></h1><div id="generated" class="subtitle"></div>
+  <p class="note warning">Functional coverage and RTL line coverage are independent metrics.
+    This report intentionally does not average them into a synthetic score.</p>
+  <div id="summary" class="grid"></div>
+  <section id="functional"><h2>Functional coverage</h2><div id="functional-body"></div></section>
+  <section id="line"><h2>RTL line coverage</h2><div id="line-body"></div></section>
+</main>
+<script id="coverage-data" type="application/json">@@REPORT_JSON@@</script>
+<script>
+"use strict";
+const report=JSON.parse(document.getElementById("coverage-data").textContent);
+const byId=id=>document.getElementById(id); const pct=v=>`${Number(v||0).toFixed(2)}%`;
+function node(tag,text,cls){const n=document.createElement(tag);if(text!==undefined)n.textContent=text;
+  if(cls)n.className=cls;return n;}
+function progress(value){const bar=node("div",undefined,"bar"),fill=node("i");
+  fill.style.width=`${Math.max(0,Math.min(100,value||0))}%`;
+  if(value<70)fill.className="bad";else if(value<90)fill.className="warn";bar.append(fill);return bar;}
+function card(label,value,detail,coverage){const c=node("div",undefined,"card");c.append(node("div",label,"subtitle"),
+  node("div",value,"metric"),node("div",detail||"","note"));if(coverage!==undefined)c.append(progress(coverage));return c;}
+function coverageTable(items,kind,schemas){const table=node("table"),head=node("tr");
+  ["Name","Meaning","Coverage","Samples","Bins (hit count)"].forEach(x=>head.append(node("th",x)));table.append(head);
+  for(const item of items){const row=node("tr"),schema=(schemas||[]).find(x=>x.name===item.name)||{};
+    const atLeast=kind==="cross"?(schema.at_least||1):null;row.append(node("td",item.name),node("td",schema.description||"—"));
+    const cov=node("td",pct(item.coverage),item.coverage>=item.goal?"ok":"miss");cov.append(progress(item.coverage));row.append(cov);
+    row.append(node("td",String(item.samples)));const bins=node("td");
+    for(const [name,count] of Object.entries(item.counts||{})){let threshold=atLeast||1;
+      if(kind==="point"){const b=(schema.bins||[]).find(x=>x.name===name);threshold=b?.at_least||1;}
+      bins.append(node("span",`${name}: ${count}`,`pill ${count>=threshold?"ok":"miss"}`));}row.append(bins);table.append(row);}
+  return table;}
+byId("title").textContent=report.title;byId("generated").textContent=`Generated ${report.generated_at}`;
+const summary=byId("summary");
+if(report.functional)summary.append(card("Functional",pct(report.functional.coverage),
+  `${report.functional.groups.length} covergroup instance(s)`,report.functional.coverage));
+for(const line of report.line_coverage)summary.append(card(`${line.name} lines`,pct(line.line_coverage),
+  `${line.lines_hit} / ${line.lines_found} lines`,line.line_coverage));
+const fbody=byId("functional-body");
+if(!report.functional){fbody.append(node("p","No functional coverage input.","note"));}
+else for(const group of report.functional.groups){const d=node("details");d.open=true;
+  d.append(node("summary",`${group.instance} — ${pct(group.coverage)} (${group.samples} samples)`));
+  d.append(node("p",group.schema?.description||"No covergroup description provided.",group.schema?.description?"":"note"));
+  if((group.illegal_hits||[]).length)d.append(node("p",`${group.illegal_hits.length} illegal hit(s)`,"miss"));
+  d.append(node("h3","Coverpoints"),coverageTable(group.points,"point",group.schema?.points));
+  if(group.crosses.length)d.append(node("h3","Crosses"),coverageTable(group.crosses,"cross",group.schema?.crosses));fbody.append(d);}
+const lbody=byId("line-body");
+if(!report.line_coverage.length)lbody.append(node("p","No line coverage input.","note"));
+else for(const provider of report.line_coverage){const d=node("details");d.open=true;
+  d.append(node("summary",`${provider.name} — ${pct(provider.line_coverage)} (${provider.lines_hit}/${provider.lines_found})`));
+  const table=node("table"),head=node("tr");["Source","Coverage","Hit / Found","Uncovered lines"].forEach(x=>head.append(node("th",x)));table.append(head);
+  for(const file of provider.files){const row=node("tr");const path=node("td");path.append(node("code",file.path));row.append(path);
+    const cov=node("td",pct(file.line_coverage),file.line_coverage>=90?"ok":file.line_coverage<70?"miss":"");cov.append(progress(file.line_coverage));row.append(cov);
+    row.append(node("td",`${file.lines_hit} / ${file.lines_found}`));row.append(node("td",file.uncovered_lines.join(", ")||"—"));table.append(row);}d.append(table);lbody.append(d);}
+</script></body></html>
