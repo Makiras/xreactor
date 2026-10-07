@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import Any, Callable, Protocol
 
 
 class SupportsEval(Protocol):
@@ -132,8 +132,32 @@ def signal_expr(signal: Any) -> BoundSignalExpr:
 
 def _read_bound_signal(signal: Any) -> Any:
     from .signals import read_signal
+    from .events import LogicValue
 
-    return read_signal(signal)
+    value = read_signal(signal)
+    return value.as_int() if isinstance(value, LogicValue) and value.is_known else value
+
+
+def _condition_known(expression: XExpr, dut: Any) -> bool:
+    """Match the native predicate contract: dependent X/Z does not match."""
+    from .events import LogicValue
+    if isinstance(expression, (SignalExpr, BoundSignalExpr)):
+        signal = (resolve_path(dut, expression.path) if isinstance(expression, SignalExpr)
+                  else expression.signal)
+        valid = getattr(signal, "DataValid", None)
+        if callable(valid):
+            return bool(valid())
+        value = _read_bound_signal(signal)
+        return not isinstance(value, LogicValue) or value.is_known
+    if isinstance(expression, UnaryExpr):
+        return _condition_known(expression.operand, dut)
+    if isinstance(expression, BinaryExpr):
+        return _condition_known(expression.left, dut) and _condition_known(expression.right, dut)
+    return True
+
+
+def _evaluate_condition(expression: XExpr, dut: Any) -> bool:
+    return _condition_known(expression, dut) and bool(expression.evaluate(dut))
 
 
 def resolve_path(root: Any, path: tuple[str, ...]) -> Any:
@@ -174,7 +198,54 @@ class HoldStep:
             raise ValueError("Hold cycles must be positive")
 
 
-SequenceStep = WaitStep | WithinStep | HoldStep
+@dataclass(frozen=True, slots=True)
+class NextStep:
+    condition: XExpr
+
+
+SequenceStep = WaitStep | WithinStep | HoldStep | NextStep
+
+
+@dataclass(slots=True)
+class _SequenceState:
+    index: int = 0
+    age: int = 0
+    held: int = 0
+    failed: bool = False
+    expired: bool = False
+
+
+def _advance_sequence(steps: tuple[SequenceStep, ...], state: _SequenceState,
+                      evaluate: Callable[[XExpr], bool]) -> bool:
+    """Shared by trigger and coverage runtimes; one step per sample."""
+    step = steps[state.index]
+    state.failed = False
+    state.expired = False
+    complete = False
+    if isinstance(step, (WaitStep, NextStep)):
+        complete = evaluate(step.condition)
+        if isinstance(step, NextStep) and not complete:
+            state.index = state.age = state.held = 0
+            state.failed = True
+    elif isinstance(step, WithinStep):
+        state.age += 1
+        if state.age > step.maximum:
+            state.index = state.age = state.held = 0
+            state.failed = True
+            state.expired = True
+            return False
+        complete = state.age >= step.minimum and evaluate(step.condition)
+    elif isinstance(step, HoldStep):
+        state.held = state.held + 1 if evaluate(step.condition) else 0
+        complete = state.held >= step.cycles
+    if not complete:
+        return False
+    state.index += 1
+    state.age = state.held = 0
+    if state.index == len(steps):
+        state.index = 0
+        return True
+    return False
 
 
 @dataclass(frozen=True, slots=True)
@@ -188,6 +259,11 @@ class SequenceSpec:
 
 def Wait(condition: Any) -> WaitStep:
     return WaitStep(as_expr(condition))
+
+
+def Next(condition: Any) -> NextStep:
+    """Require the condition on the next sample, restarting on mismatch."""
+    return NextStep(as_expr(condition))
 
 
 def Within(minimum: int, maximum: int, condition: Any) -> WithinStep:

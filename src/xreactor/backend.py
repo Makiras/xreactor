@@ -14,6 +14,7 @@ from .ir import (
     ConstantExpr,
     FsmSpec,
     HoldStep,
+    NextStep,
     SequenceSpec,
     SignalExpr,
     UnaryExpr,
@@ -21,6 +22,10 @@ from .ir import (
     WithinStep,
     XExpr,
     resolve_path,
+    _SequenceState,
+    _advance_sequence,
+    _condition_known,
+    _evaluate_condition,
 )
 from .triggers import (
     ClockCycles,
@@ -131,13 +136,6 @@ class SimulationBackend(Protocol):
     def refresh_comb(self) -> None: ...
 
     def sample_drive_stable(self) -> RunResult | None: ...
-
-
-@dataclass(slots=True)
-class _SequenceState:
-    index: int = 0
-    age: int = 0
-    held: int = 0
 
 
 @dataclass(slots=True)
@@ -472,6 +470,8 @@ class MemoryBackend:
                 if terminal is not None:
                     return XEventKind.FSM, trigger.name, True, terminal
                 return None
+            if not _condition_known(trigger.program, trigger.dut):
+                return None
             current = bool(trigger.program.evaluate(trigger.dut))
             emit = _condition_emits(
                 trigger.mode, current, watcher.last_condition
@@ -487,36 +487,8 @@ class MemoryBackend:
     ) -> bool:
         program = trigger.program
         assert isinstance(program, SequenceSpec)
-        step = program.steps[state.index]
-        complete = False
-        if isinstance(step, WaitStep):
-            complete = bool(step.condition.evaluate(trigger.dut))
-        elif isinstance(step, WithinStep):
-            state.age += 1
-            if state.age > step.maximum:
-                state.index = 0
-                state.age = 0
-                state.held = 0
-                return False
-            complete = (
-                state.age >= step.minimum
-                and bool(step.condition.evaluate(trigger.dut))
-            )
-        elif isinstance(step, HoldStep):
-            if bool(step.condition.evaluate(trigger.dut)):
-                state.held += 1
-            else:
-                state.held = 0
-            complete = state.held >= step.cycles
-        if not complete:
-            return False
-        state.index += 1
-        state.age = 0
-        state.held = 0
-        if state.index == len(program.steps):
-            state.index = 0
-            return True
-        return False
+        return _advance_sequence(program.steps, state,
+                                 lambda expr: _evaluate_condition(expr, trigger.dut))
 
     def _advance_fsm(
         self, trigger: CompiledTrigger, runtime: _FsmState
@@ -527,9 +499,7 @@ class MemoryBackend:
             runtime.current = program.start
         states = dict(program.states)
         for transition in states[runtime.current].transitions:
-            if transition.condition is not None and not bool(
-                transition.condition.evaluate(trigger.dut)
-            ):
+            if transition.condition is not None and not _evaluate_condition(transition.condition, trigger.dut):
                 continue
             if transition.terminal is not None:
                 runtime.current = program.start
@@ -1132,6 +1102,8 @@ class XCommClockBackend:
             for step in program.steps:
                 if isinstance(step, WaitStep):
                     shape = ("wait",)
+                elif isinstance(step, NextStep):
+                    shape = ("next",)
                 elif isinstance(step, WithinStep):
                     shape = ("within", step.minimum, step.maximum)
                 elif isinstance(step, HoldStep):
@@ -1186,6 +1158,8 @@ class XCommClockBackend:
             native.root = self._lower_expr(step.condition, dut)
             if isinstance(step, WaitStep):
                 native.kind = self._xspcomm.XSequenceStepKind_Wait
+            elif isinstance(step, NextStep):
+                native.kind = self._xspcomm.XSequenceStepKind_Next
             elif isinstance(step, WithinStep):
                 native.kind = self._xspcomm.XSequenceStepKind_Within
                 native.minimum = step.minimum

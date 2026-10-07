@@ -88,6 +88,9 @@ def pytrigger(
             def predicate() -> bool:
                 result = function(dut, *args, **kwargs)
                 if hasattr(result, "__await__"):
+                    close = getattr(result, "close", None)
+                    if close is not None:
+                        close()
                     raise TypeError(
                         "pytrigger predicates must be synchronous; "
                         "use an asyncio source adapter for async work"

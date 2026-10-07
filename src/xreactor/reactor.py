@@ -51,6 +51,9 @@ class Subscription:
     capture: Callable[[XEvent], Any] | None = None
     task: asyncio.Task[None] | None = None
     active: bool = True
+    # An owning component receives terminal state instead of the global pump.
+    # Ordinary @on subscriptions leave this unset and retain Execution errors.
+    _on_stop: Callable[[BaseException | None], None] | None = None
 
 
 class XReactor:
@@ -69,6 +72,7 @@ class XReactor:
         self._next_subscription_id = 1
         self._background_error: BaseException | None = None
         self._drive_owners: dict[Hashable, tuple[object, Any]] = {}
+        self._monitor_consumers: dict[int, tuple[object, object]] = {}
         self._closed = False
 
     def register(self, trigger: XTrigger[Any]) -> Registration:
@@ -168,19 +172,24 @@ class XReactor:
                     event = _event_from_hit(hit)
                     event_cache[hit.event_id] = event
                     delivered.append(event)
-                item: Any = event
-                if subscription.capture is not None:
-                    item = subscription.capture(event)
-                    if inspect.isawaitable(item):
-                        close = getattr(item, "close", None)
-                        if close is not None:
-                            close()
-                        raise TypeError(
-                            "subscription capture must be synchronous"
-                        )
-                if not self.backend.rearm(subscription.handle):
-                    raise RuntimeError("backend failed to rearm subscription")
-                self._enqueue(subscription, item)
+                try:
+                    item: Any = event
+                    if subscription.capture is not None:
+                        item = subscription.capture(event)
+                        if inspect.isawaitable(item):
+                            close = getattr(item, "close", None)
+                            if close is not None:
+                                close()
+                            raise TypeError(
+                                "subscription capture must be synchronous"
+                            )
+                    if not self.backend.rearm(subscription.handle):
+                        raise RuntimeError("backend failed to rearm subscription")
+                    self._enqueue(subscription, item)
+                except Exception as error:
+                    if subscription._on_stop is None:
+                        raise
+                    self._stop_subscription(subscription, error)
                 continue
             registration = self._registrations.get(key)
             if registration is None or not registration.active:
@@ -207,7 +216,7 @@ class XReactor:
                 registration.future.set_exception(error)
         self._registrations.clear()
         for subscription in tuple(self._subscriptions.values()):
-            self.cancel_subscription(subscription)
+            self._stop_subscription(subscription, error)
         self.work_available.clear()
 
     def close(self) -> None:
@@ -223,7 +232,19 @@ class XReactor:
         for subscription in tuple(self._subscriptions.values()):
             self.cancel_subscription(subscription)
         self._drive_owners.clear()
+        self._monitor_consumers.clear()
         self.work_available.set()
+
+    def _claim_monitor_consumer(self, monitor: object, owner: object) -> None:
+        previous = self._monitor_consumers.get(id(monitor))
+        if previous is not None and previous[1] is not owner:
+            raise RuntimeError("monitor already has a Scoreboard consumer")
+        self._monitor_consumers[id(monitor)] = (monitor, owner)
+
+    def _release_monitor_consumer(self, monitor: object, owner: object) -> None:
+        previous = self._monitor_consumers.get(id(monitor))
+        if previous is not None and previous[1] is owner:
+            self._monitor_consumers.pop(id(monitor))
 
     def claim_driver(
         self, owner: object, signals: tuple[tuple[Hashable, Any], ...]
@@ -273,16 +294,28 @@ class XReactor:
         )
 
     def cancel_subscription(self, subscription: Subscription) -> None:
+        self._stop_subscription(subscription)
+
+    def _stop_subscription(
+        self, subscription: Subscription, error: BaseException | None = None
+    ) -> None:
         if not subscription.active:
             return
+        task = subscription.task
+        if error is None and task is not None and task.done() and not task.cancelled():
+            error = task.exception()
         subscription.active = False
         key = (subscription.handle.slot, subscription.handle.generation)
         self._subscriptions.pop(key, None)
-        self.backend.disarm(subscription.handle)
-        if subscription.task is not None:
-            subscription.task.cancel()
-        if not self._registrations and not self._subscriptions:
-            self.work_available.clear()
+        try:
+            self.backend.disarm(subscription.handle)
+        finally:
+            if subscription.task is not None and not subscription.task.done():
+                subscription.task.cancel()
+            if subscription._on_stop is not None:
+                subscription._on_stop(error)
+            if not self._registrations and not self._subscriptions:
+                self.work_available.clear()
 
     def raise_background_error(self) -> None:
         if self._background_error is not None:
@@ -313,13 +346,22 @@ class XReactor:
     def _subscription_done(
         self, subscription: Subscription, task: asyncio.Task[None]
     ) -> None:
-        if task.cancelled() or self._closed:
+        if task.cancelled():
+            self.cancel_subscription(subscription)
             return
         error = task.exception()
         if error is not None:
-            self._background_error = error
-            self.cancel_subscription(subscription)
-            self.work_available.set()
+            if subscription._on_stop is not None:
+                if subscription.active:
+                    self._stop_subscription(subscription, error)
+                else:
+                    # A handler can fail while unwinding cancellation after
+                    # its subscription has already been stopped.
+                    subscription._on_stop(error)
+            elif not self._closed:
+                self._background_error = error
+                self.cancel_subscription(subscription)
+                self.work_available.set()
 
 
 def _event_from_hit(hit: BackendHit) -> XEvent:

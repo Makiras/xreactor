@@ -9,8 +9,27 @@ from .backend import (
     SimulationBackend,
     XCommClockBackend,
 )
+from ._asyncio_observer import SimulationNotSettledError
 from .decorators import pytrigger, xtrigger
-from .components import Driver, Monitor
+from .components import Driver, Monitor, SignalDriver
+from .agent import Agent
+from .scoreboard import (
+    AcceptedDriver,
+    CheckContext,
+    Difference,
+    MissingExpectedError,
+    ObservedMonitor,
+    Scoreboard,
+    ScoreboardAssociationError,
+    ScoreboardError,
+    ScoreboardIncompleteError,
+    ScoreboardMismatch,
+    ScoreboardMode,
+    ScoreboardStatus,
+    ScoreboardTimeoutError,
+    structural_differences,
+)
+from .transfers import MISSING, TransferState, XTransfer
 from .coverage import (
     Bin,
     BinKind,
@@ -38,7 +57,9 @@ from .data import (
     PackedView,
     split_packed,
 )
-from .drivers import ReadyValidDriver
+from .async_drivers import AsyncDriver, AsyncSingleCycleDriver, DriverIncompleteError
+from .sync_drivers import SyncDriver, SyncSingleCycleDriver
+from .staged_drivers import AsyncMultiCycleDriver, DriveStage, SyncMultiCycleDriver
 from .combinators import AllOf, AnyOf
 from .events import (
     ConditionEvent,
@@ -54,6 +75,7 @@ from .ir import (
     FSM,
     FsmSpec,
     Hold,
+    Next,
     Sequence,
     SequenceSpec,
     State,
@@ -62,8 +84,8 @@ from .ir import (
     XExpr,
 )
 from .external import AsyncioEventTrigger, QueueTrigger, TaskComplete, WallTimeout
-from .interfaces import Decoupled, Interface, ReadyValid, Role, Transfer
-from .monitors import MonitorOverflowError, ReadyValidMonitor
+from .interfaces import Decoupled, ReadyValid, Role, Transfer
+from .monitors import MonitorClosedError, MonitorOverflowError, ReadyValidMonitor, SamplingMonitor
 from .reactor import (
     Registration,
     Subscription,
@@ -94,6 +116,9 @@ from .triggers import (
 )
 
 __all__ = [
+    "Agent",
+    "SimulationNotSettledError",
+    "AcceptedDriver",
     "BackendHandle",
     "BackendCapabilities",
     "BackendHit",
@@ -107,6 +132,7 @@ __all__ = [
     "AnyOf",
     "AsyncioEventTrigger",
     "ClockCycles",
+    "CheckContext",
     "CompiledTrigger",
     "ConditionMode",
     "ConditionEvent",
@@ -121,7 +147,12 @@ __all__ = [
     "CrossDef",
     "Decoupled",
     "DriveStable",
+    "Difference",
     "Driver",
+    "SignalDriver",
+    "SyncDriver",
+    "SyncSingleCycleDriver",
+    "SyncMultiCycleDriver",
     "EdgeEvent",
     "FallingEdge",
     "Field",
@@ -131,15 +162,19 @@ __all__ = [
     "generate_unified_coverage_report",
     "generate_unified_coverage_site",
     "Hold",
+    "Next",
     "LogicValue",
-    "Interface",
     "Iff",
     "IllegalBinError",
     "IllegalHit",
     "IllegalPolicy",
     "MemoryBackend",
+    "MISSING",
+    "MissingExpectedError",
     "MonitorOverflowError",
+    "MonitorClosedError",
     "Monitor",
+    "ObservedMonitor",
     "OverlapPolicy",
     "PackedArray",
     "PackedLayout",
@@ -149,15 +184,28 @@ __all__ = [
     "PhaseTrigger",
     "PythonPredicateTrigger",
     "QueueTrigger",
+    "AsyncDriver",
+    "DriverIncompleteError",
+    "AsyncSingleCycleDriver",
+    "AsyncMultiCycleDriver",
+    "DriveStage",
     "Registration",
     "render_unified_coverage_html",
     "ReadyValid",
-    "ReadyValidDriver",
     "ReadyValidMonitor",
+    "SamplingMonitor",
     "RisingEdge",
     "RunLimit",
     "RunResult",
     "Role",
+    "Scoreboard",
+    "ScoreboardAssociationError",
+    "ScoreboardError",
+    "ScoreboardIncompleteError",
+    "ScoreboardMismatch",
+    "ScoreboardMode",
+    "ScoreboardStatus",
+    "ScoreboardTimeoutError",
     "StopReason",
     "Sequence",
     "SequenceSpec",
@@ -169,6 +217,7 @@ __all__ = [
     "SubscriptionOverflowError",
     "TaskComplete",
     "Transfer",
+    "TransferState",
     "Value",
     "ValueChange",
     "WallTimeout",
@@ -181,11 +230,13 @@ __all__ = [
     "XReactor",
     "XCommClockBackend",
     "XTrigger",
+    "XTransfer",
     "XSubscriptionSpec",
     "on",
     "as_xdata",
     "pytrigger",
     "split_packed",
+    "structural_differences",
     "xtrigger",
     "drive_ready_valid",
 ]

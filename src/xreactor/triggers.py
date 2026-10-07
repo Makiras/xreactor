@@ -96,6 +96,8 @@ class ValueChange(XTrigger[XEvent]):
 
 @dataclass(frozen=True, slots=True)
 class SimTimeout(XTrigger[XEvent]):
+    """Return a TIMEOUT event after rising cycles; do not raise an error."""
+
     cycles: int
     clock: Any
 

@@ -12,7 +12,6 @@ from xreactor import (
     PackedLayout,
     PackedView,
     ReadyValid,
-    ReadyValidDriver,
     ReadyValidMonitor,
     RisingEdge,
     RunLimit,
@@ -20,6 +19,7 @@ from xreactor import (
     Sequence,
     Execution,
     State,
+    SyncDriver,
     Value,
     ValueChange,
     Wait,
@@ -30,6 +30,7 @@ from xreactor import (
     pytrigger,
     on,
     xtrigger,
+    drive_ready_valid,
 )
 
 try:
@@ -145,6 +146,12 @@ class XCommBackendTests(unittest.IsolatedAsyncioTestCase):
         self.assertIs(event.phase, XPhase.DRIVE_STABLE)
 
     async def test_native_monitor_observes_python_driver_at_drive_stable(self):
+        class Input(SyncDriver[dict[str, int]]):
+            async def _drive_one(self, request):
+                return await drive_ready_valid(
+                    clock, valid, ready, lambda: producer.bits.drive(request),
+                )
+
         clock = xspcomm.XClock(lambda _: 0)
         valid = xspcomm.XData(1, xspcomm.XData.InOut)
         ready = xspcomm.XData(1, xspcomm.XData.InOut)
@@ -163,13 +170,59 @@ class XCommBackendTests(unittest.IsolatedAsyncioTestCase):
             monitor = ReadyValidMonitor(
                 producer.monitor_view()
             ).start(execution)
-            driver = ReadyValidDriver(producer)
+            driver = Input((valid, data), name=producer.name)
             accepted = await driver.send({"data": 0xBEEF})
             transfer = await monitor.recv()
             driver.close()
             await monitor.aclose()
         self.assertEqual(transfer.value.data.as_int(), 0xBEEF)
         self.assertEqual(transfer.accepted_tick, accepted.tick)
+
+    async def test_native_driver_waits_for_later_same_phase_ready_change(self):
+        clock = xspcomm.XClock(lambda _: 0)
+        valid = xspcomm.XData(1, xspcomm.XData.InOut)
+        ready = xspcomm.XData(1, xspcomm.XData.InOut)
+        data = xspcomm.XData(8, xspcomm.XData.InOut)
+        ready.Set(1)
+
+        class Input(SyncDriver[int]):
+            async def _drive_one(self, request):
+                def drive():
+                    data.Set(request)
+                return await drive_ready_valid(clock, valid, ready, drive)
+
+        async def change_arbitration():
+            # Runs after Input's drive on this same falling phase. A provisional
+            # ready=1 must not make the driver withdraw an unaccepted request.
+            await FallingEdge(clock)
+            ready.Set(0)
+            await ClockCycles(clock, 2)
+            await FallingEdge(clock)
+            ready.Set(1)
+            return int(clock.GetHalfTick())
+
+        backend = XCommClockBackend(clock)
+        driver = Input((valid, data), name="late-ready")
+        monitor = None
+        async with Execution(backend) as execution:
+            monitor = ReadyValidMonitor(ReadyValid(
+                clock, valid, ready, Bundle(data=data), role=Role.MONITOR,
+            )).start(execution)
+            sending = asyncio.create_task(driver.send(0xA5))
+            arbitration = asyncio.create_task(change_arbitration())
+            try:
+                async with asyncio.timeout(2):
+                    accepted, released_tick = await asyncio.gather(sending, arbitration)
+                    transfer = await monitor.recv()
+                self.assertGreater(accepted.tick, released_tick)
+                self.assertEqual(transfer.accepted_tick, accepted.tick)
+                self.assertEqual(transfer.value.data.as_int(), 0xA5)
+            finally:
+                sending.cancel()
+                arbitration.cancel()
+                await asyncio.gather(sending, arbitration, return_exceptions=True)
+                driver.close()
+                await monitor.aclose()
 
     async def test_native_condition_change_preserves_false_value(self):
         class Dut:

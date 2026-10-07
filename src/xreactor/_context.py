@@ -18,7 +18,7 @@ def current_reactor() -> "XReactor":
     return reactor
 
 
-def bind_reactor(reactor: "XReactor") -> Token["XReactor | None"]:
+def bind_reactor(reactor: "XReactor | None") -> Token["XReactor | None"]:
     return _current_reactor.set(reactor)
 
 

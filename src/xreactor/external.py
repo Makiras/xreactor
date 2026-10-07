@@ -45,6 +45,8 @@ class QueueTrigger(XTrigger[XEvent], Generic[T]):
 
 @dataclass(frozen=True, slots=True)
 class TaskComplete(XTrigger[XEvent], Generic[T]):
+    """Adapt a task's result without cancelling it when this wait is cancelled."""
+
     task: asyncio.Future[T]
     simulation_bound = False
 
@@ -55,6 +57,8 @@ class TaskComplete(XTrigger[XEvent], Generic[T]):
 
 @dataclass(frozen=True, slots=True)
 class WallTimeout(XTrigger[XEvent]):
+    """Return a TIMEOUT event after wall-clock seconds; do not raise an error."""
+
     seconds: float
     simulation_bound = False
 

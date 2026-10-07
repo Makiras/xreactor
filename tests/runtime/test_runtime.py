@@ -387,8 +387,8 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
                 heartbeats += 1
                 await asyncio.sleep(0)
 
-        async with Execution(backend, max_batch_ticks=1):
-            task = asyncio.create_task(heartbeat())
+        async with Execution(backend, max_batch_ticks=1) as execution:
+            task = execution.external_task(heartbeat())
             await ClockCycles(dut.clk, 20)
             running = False
             await task

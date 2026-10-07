@@ -11,6 +11,12 @@ from .triggers import XTrigger
 
 @dataclass(frozen=True, slots=True)
 class AnyOf(XTrigger[XEvent]):
+    """Return the first event and cancel other waits.
+
+    Wrap existing tasks in TaskComplete to preserve the source task and adapt
+    its result to XEvent. A TIMEOUT event is returned, not raised.
+    """
+
     triggers: tuple[Awaitable[XEvent], ...]
     simulation_bound = False
 
@@ -38,6 +44,11 @@ class AnyOf(XTrigger[XEvent]):
 
 @dataclass(frozen=True, slots=True)
 class AllOf(XTrigger[XEvent]):
+    """Collect all events; cancel unfinished waits if one fails.
+
+    TaskComplete protects an existing source task from this cancellation.
+    """
+
     triggers: tuple[Awaitable[XEvent], ...]
     simulation_bound = False
 

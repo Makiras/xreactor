@@ -10,13 +10,32 @@ from xreactor import (
     MemoryBackend,
     Monitor,
     ReadyValid,
-    ReadyValidDriver,
     ReadyValidMonitor,
     Role,
     Execution,
+    SyncDriver,
     XPhase,
     as_xdata,
+    drive_ready_valid,
 )
+
+
+class BundleInput(SyncDriver[dict[str, int]]):
+    """Test-local protocol composition using the common input scheduler."""
+
+    def __init__(self, interface):
+        self.interface = interface
+        super().__init__(
+            (interface.valid, *(signal for _, signal in interface.bits.leaves())),
+            name=interface.name,
+        )
+
+    async def _drive_one(self, request):
+        interface = self.interface
+        return await drive_ready_valid(
+            interface.clock, interface.valid, interface.ready,
+            lambda: interface.bits.drive(request),
+        )
 
 
 class Signal:
@@ -210,7 +229,7 @@ class ReadyValidTests(unittest.IsolatedAsyncioTestCase):
             Bundle(data=Signal()), role=Role.PRODUCER,
         )
         passive = producer.monitor_view()
-        self.assertIsInstance(ReadyValidDriver(producer), Driver)
+        self.assertIsInstance(BundleInput(producer), Driver)
         self.assertIsInstance(ReadyValidMonitor(passive), Monitor)
 
     async def test_role_direction_validation_and_flipped_view(self):
@@ -255,7 +274,7 @@ class ReadyValidTests(unittest.IsolatedAsyncioTestCase):
 
         backend = MemoryBackend(clock, on_phase=on_phase)
         async with Execution(backend):
-            driver = ReadyValidDriver(interface)
+            driver = BundleInput(interface)
             first, second = await asyncio.gather(
                 driver.send({"data": 0x11}),
                 driver.send({"data": 0x22}),
@@ -276,8 +295,8 @@ class ReadyValidTests(unittest.IsolatedAsyncioTestCase):
         )
         backend = MemoryBackend(clock)
         async with Execution(backend):
-            first = ReadyValidDriver(interface)
-            second = ReadyValidDriver(interface)
+            first = BundleInput(interface)
+            second = BundleInput(interface)
             await first.__aenter__()
             with self.assertRaisesRegex(RuntimeError, "already have a driver"):
                 await second.__aenter__()
@@ -301,8 +320,8 @@ class ReadyValidTests(unittest.IsolatedAsyncioTestCase):
         )
         backend = MemoryBackend(clock)
         async with Execution(backend):
-            first = ReadyValidDriver(first_interface)
-            second = ReadyValidDriver(second_interface)
+            first = BundleInput(first_interface)
+            second = BundleInput(second_interface)
             await first.__aenter__()
             with self.assertRaisesRegex(RuntimeError, "already have a driver"):
                 await second.__aenter__()
@@ -369,7 +388,7 @@ class ReadyValidTests(unittest.IsolatedAsyncioTestCase):
             monitor = ReadyValidMonitor(
                 producer.monitor_view()
             ).start(execution)
-            driver = ReadyValidDriver(producer)
+            driver = BundleInput(producer)
             accepted = await driver.send({"data": 0xCAFE})
             transfer = await monitor.recv()
             driver.close()

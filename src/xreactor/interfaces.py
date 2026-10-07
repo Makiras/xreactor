@@ -20,10 +20,6 @@ class Role(str, Enum):
     MONITOR = "monitor"
 
 
-class Interface:
-    """Marker base for protocol-aware, bound signal views."""
-
-
 @dataclass(frozen=True, slots=True)
 class Transfer(Generic[T]):
     event: XEvent
@@ -35,7 +31,7 @@ class Transfer(Generic[T]):
 
 
 @dataclass(frozen=True, slots=True)
-class ReadyValid(Interface):
+class ReadyValid:
     clock: Any
     valid: Any
     ready: Any
