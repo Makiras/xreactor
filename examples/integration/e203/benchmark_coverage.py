@@ -9,7 +9,7 @@ from pathlib import Path
 import statistics
 from tempfile import TemporaryDirectory
 
-from e203_xreactor_env import load_generated_dut, run_campaign
+from e203_xreactor_env import directed_requests, load_generated_dut, run_campaign
 
 
 async def _run_once(DUT: type, coverage_file: Path, count: int, enabled: bool) -> float:
@@ -49,7 +49,7 @@ async def _benchmark(args: argparse.Namespace) -> dict:
     return {
         "schema": 1,
         "random_transactions_per_run": args.random_count,
-        "directed_transactions_per_run": 10,
+        "directed_transactions_per_run": len(directed_requests()),
         "repeats": args.repeats,
         "coverage_enabled_seconds": enabled,
         "coverage_disabled_seconds": disabled,

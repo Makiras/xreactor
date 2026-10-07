@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import argparse
 from collections import deque
+import json
+from pathlib import Path
 
 try:
     from CacheSignalCFG import DUTCacheSignalCFG
@@ -25,8 +28,10 @@ def half_cycle(clock, rising: bool) -> None:
     assert phase == expected, f"expected phase {expected}, got {phase}"
 
 
-def main() -> None:
-    dut = DUTCacheSignalCFG()
+def main(artifacts: Path) -> None:
+    artifacts = artifacts.resolve()
+    artifacts.mkdir(parents=True, exist_ok=True)
+    dut = DUTCacheSignalCFG(coverage_filename=str(artifacts / "verilator-coverage.dat"))
     dut.InitClock("clock")
     initialize_inputs(dut)
     clock = dut.GetXClock()
@@ -151,24 +156,10 @@ def main() -> None:
                     refill.append((cmd, 0xB000_0000_0000_0000 | (line + index * 8)))
                 new_refill = True
 
-            if get(dut.io_in_resp_valid) and get(dut.io_in_resp_ready):
-                response = (
-                    tick,
-                    get(dut.io_in_resp_bits_cmd),
-                    get(dut.io_in_resp_bits_rdata),
-                    get(dut.io_in_resp_bits_user),
-                )
-                read_responses.append(response)
-                if response[3] == 0x101 and overlap_delay < 0:
-                    overlap_delay = 1
-
             if overlap_delay == 0:
                 set_(dut.io_in_req_bits_addr, second_addr)
                 set_(dut.io_in_req_bits_user, 0x102)
                 set_(dut.io_in_req_valid, 1)
-                clock.RefreshComb()
-                assert get(dut.io_in_req_ready) == 1
-                overlap_accepted_tick = tick + 1
                 overlap_active = True
                 overlap_delay = -1
 
@@ -181,9 +172,23 @@ def main() -> None:
             elif refill_cooldown:
                 refill_cooldown -= 1
 
+            # Refill writes can withdraw Stage1 SRAM readiness in this same
+            # phase. Count acceptance only after every input drive settles.
+            clock.RefreshComb()
+            overlap_handshake = (overlap_active and get(dut.io_in_req_valid)
+                                 and get(dut.io_in_req_ready))
+            if overlap_handshake:
+                overlap_accepted_tick = tick + 1
+            if get(dut.io_in_resp_valid) and get(dut.io_in_resp_ready):
+                response = (tick + 1, get(dut.io_in_resp_bits_cmd),
+                            get(dut.io_in_resp_bits_rdata), get(dut.io_in_resp_bits_user))
+                read_responses.append(response)
+                if response[3] == 0x101 and overlap_delay < 0:
+                    overlap_delay = 1
+
             half_cycle(clock, True)
 
-            if overlap_active:
+            if overlap_handshake:
                 set_(dut.io_in_req_valid, 0)
                 overlap_active = False
             if refill_active:
@@ -201,6 +206,11 @@ def main() -> None:
                 "responses": read_responses,
             },
         )
+        (artifacts / "direct-protocol-probe.json").write_text(json.dumps({
+            "sampling": "all input drives settled before the rising acceptance edge",
+            "mmio_handshakes": mmio_handshakes, "mmio_responses": upstream_responses,
+            "overlap_accepted_tick": overlap_accepted_tick, "overlap_responses": read_responses,
+        }, indent=2) + "\n")
         assert overlap_accepted_tick >= 0
         assert any(response[3] == 0x102 for response in read_responses), (
             "accepted overlap request produced no response"
@@ -210,4 +220,6 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--artifacts", type=Path, default=Path("output/cache-probe"))
+    main(parser.parse_args().artifacts)

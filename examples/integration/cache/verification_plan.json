@@ -1,0 +1,2286 @@
+{
+  "scope": {
+    "revision": "2026-10-03-error-detection-and-recovery",
+    "target": "CacheSignalCFG generated write-capable Cache, 4 ways/128 sets/8 words per line",
+    "source_sha256": {
+      "example/CacheSignalCFG/Cache.v": "0ad44cce29d699db56b401d1c9fe87bb217a0a19bb6fb8dadc39e4fac04e9273"
+    },
+    "basis": "RTL-derived obligations with implemented observers and actual evidence; not a claim of complete design specification conformance.",
+    "closure_rule": "Merge observed scenario counts across compatible runs; assess coverage targets and correctness checks separately. Requirements without samplers are unmeasured.",
+    "layers": {
+      "design_external": "端到端可见行为",
+      "design_internal": "内部状态/数据路径/互锁义务",
+      "testbench": "验证器、预算、取消和报告自身的测试"
+    },
+    "excluded": [
+      "其他 Cache 配置的正常 flush、未提供规格的非法命令及自动恢复行为、物理 SRAM 时序"
+    ],
+    "purpose": "Design and checker requirements for coverage modeling and case design; not a pytest input or a test-result completion denominator."
+  },
+  "requirements": [
+    {
+      "id": "CACHE-REFILL-WRAP",
+      "title": "八种首 word 的 refill 回绕",
+      "component": "CPU 数据路径",
+      "description": "分别从一行的 8 个 word 发起 cold miss；下游首地址为请求地址，随后整行八个 word 读回正确，恰好一次 refill。",
+      "metadata": {
+        "evidence": "test_real_cache_coherence_campaign / verify_cache / first_word 循环",
+        "verification_layer": "design_external"
+      }
+    },
+    {
+      "id": "CACHE-READ-HIT",
+      "title": "refill 后整行命中",
+      "component": "CPU 数据路径",
+      "description": "安装 cache line 后读全部 8 个 word；逐笔数据正确且无额外下游 refill。",
+      "metadata": {
+        "evidence": "test_real_cache_coherence_campaign / verify_cache / line_a 和 first_word 循环",
+        "verification_layer": "design_external"
+      }
+    },
+    {
+      "id": "CACHE-WRITE-HIT",
+      "title": "部分写命中及延迟写回",
+      "component": "CPU 数据路径",
+      "description": "已安装行用 mask=0x3c 写入；读回等于逐字节合并值，backing memory 在替换前保持旧值。",
+      "metadata": {
+        "evidence": "test_real_cache_coherence_campaign / verify_cache / hit_addr",
+        "verification_layer": "design_external"
+      }
+    },
+    {
+      "id": "CACHE-WRITE-ALLOCATE",
+      "title": "部分写未命中分配",
+      "component": "CPU 数据路径",
+      "description": "未安装行用 mask=0xa5 写入；恰好一次 refill，读回合并值，backing memory 尚未改变。",
+      "metadata": {
+        "evidence": "test_real_cache_coherence_campaign / verify_cache / write_miss_addr",
+        "verification_layer": "design_external"
+      }
+    },
+    {
+      "id": "CACHE-BYTE-MASK",
+      "title": "零、单字节及全字节写掩码",
+      "component": "CPU 数据路径",
+      "description": "对已安装行依次使用零 mask、8 个 one-hot mask 和全 mask；每次读回与独立合并值相符，backing 保持旧值。",
+      "metadata": {
+        "evidence": "test_real_cache_coherence_campaign / verify_cache / byte_mask 循环",
+        "verification_layer": "design_external"
+      }
+    },
+    {
+      "id": "CACHE-CLEAN-REPLACE",
+      "title": "干净行替换不写回",
+      "component": "CPU 替换",
+      "description": "连续安装同一 set 的八个不同 clean tag，超过四路容量；全部读回正确且 writeback 数不增加。",
+      "metadata": {
+        "evidence": "test_real_cache_coherence_campaign / verify_cache / clean_writebacks",
+        "verification_layer": "design_external"
+      }
+    },
+    {
+      "id": "CACHE-DIRTY-REPLACE",
+      "title": "四路脏行替换保全整行",
+      "component": "CPU 替换",
+      "description": "填满同一 set 四路并各写一个 word，再读第五 tag；恰好一次 writeback，victim 必须属于四行之一，其八个 word 均正确。",
+      "metadata": {
+        "evidence": "test_real_cache_coherence_campaign / verify_cache / expected_dirty 和 victim",
+        "verification_layer": "design_external"
+      }
+    },
+    {
+      "id": "CACHE-MEMORY-STALL",
+      "title": "下游请求受阻保持",
+      "component": "CPU 时序",
+      "description": "memory request ready 拉低三个周期；valid 持续有效且 addr/cmd/size/wmask 不变，解除背压后数据正确。",
+      "metadata": {
+        "evidence": "test_real_cache_coherence_campaign / verify_cache / held_request",
+        "verification_layer": "design_external"
+      }
+    },
+    {
+      "id": "CACHE-CPU-RESPONSE-STALL",
+      "title": "CPU 读响应受阻保持",
+      "component": "CPU 时序",
+      "description": "已安装行 CPU response 背压三周期；valid 从首次出现持续到接受，data/cmd/user 全部保持稳定，最终与独立模型一致。",
+      "metadata": {
+        "evidence": "test_real_cache_coherence_campaign / CacheDriver.request",
+        "verification_layer": "design_external"
+      }
+    },
+    {
+      "id": "CACHE-MMIO-BYPASS",
+      "title": "MMIO 读写旁路",
+      "component": "MMIO",
+      "description": "一次读和 mask=0xf3 的写；读值及写后 MMIO 空间正确，memory bus 无新请求，观察十二周期后下游 MMIO 恰好两次请求。",
+      "metadata": {
+        "evidence": "test_real_cache_coherence_campaign / verify_cache / mmio_addr；main 的 protocol_issues 检查",
+        "verification_layer": "design_external"
+      }
+    },
+    {
+      "id": "CACHE-MONITOR-SNAPSHOTS",
+      "title": "Monitor 与 responder 记录一致",
+      "component": "观察链路",
+      "description": "所有已接受 memory 请求逐笔比较 addr/cmd/size/wmask/wdata；数量、顺序和内容完全一致。",
+      "metadata": {
+        "evidence": "test_real_cache_coherence_campaign / verify_cache / cache.memory-snapshots Scoreboard",
+        "verification_layer": "testbench"
+      }
+    },
+    {
+      "id": "CACHE-COH-MISS",
+      "title": "probe miss 仅响应头",
+      "component": "Coherence",
+      "description": "未安装地址在无背压和头部背压两种情况下 probe；每笔仅一拍 miss header，不发数据。",
+      "metadata": {
+        "evidence": "test_real_cache_coherence_campaign / verify_cache / 两次 miss；CoherenceAgent.probe",
+        "verification_layer": "design_external"
+      }
+    },
+    {
+      "id": "CACHE-COH-CLEAN",
+      "title": "clean hit 的整行 release",
+      "component": "Coherence",
+      "description": "已完成 refill 的 clean line 被 probe；hit header 后恰好八个数据，逐 word 与独立 line 模型一致。",
+      "metadata": {
+        "evidence": "test_real_cache_coherence_campaign / verify_cache / clean_words；CoherenceAgent.probe",
+        "verification_layer": "design_external"
+      }
+    },
+    {
+      "id": "CACHE-COH-DIRTY",
+      "title": "dirty hit 包含修改字节",
+      "component": "Coherence",
+      "description": "对已安装行使用 mask=0x5a 写入后 probe；八个数据包含合并后的 dirty word，其他字节不变。",
+      "metadata": {
+        "evidence": "test_real_cache_coherence_campaign / verify_cache / dirty_words；CoherenceAgent.probe",
+        "verification_layer": "design_external"
+      }
+    },
+    {
+      "id": "CACHE-COH-WRAP",
+      "title": "release 从请求 word 回绕",
+      "component": "Coherence",
+      "description": "clean 和 dirty 两种状态分别覆盖 start_word=0..7；八拍按 (start_word+i)%8 返回，第八数据拍使用末拍命令。",
+      "metadata": {
+        "evidence": "test_real_cache_coherence_campaign / verify_cache / 两组 start_word；CoherenceAgent.probe 的序列比较",
+        "verification_layer": "design_external"
+      }
+    },
+    {
+      "id": "CACHE-COH-STALL-HEADER",
+      "title": "头部背压",
+      "component": "Coherence 时序",
+      "description": "clean/dirty hit 的第 0 拍停两周期；ready 持续低时 valid/data 稳定，接受后的完整 cmd/data 序列正确。末拍 cmd 按 RTL 接受条件检查，不要求 ready 翻转前后 cmd 不变。",
+      "metadata": {
+        "evidence": "test_real_cache_coherence_campaign / verify_cache / stall_positions；CoherenceAgent._stall",
+        "verification_layer": "design_external"
+      }
+    },
+    {
+      "id": "CACHE-COH-STALL-FIRST",
+      "title": "首数据拍背压",
+      "component": "Coherence 时序",
+      "description": "clean/dirty hit 的第 1 拍停两周期；ready 持续低时 valid/data 稳定，接受后的完整 cmd/data 序列正确。末拍 cmd 按 RTL 接受条件检查，不要求 ready 翻转前后 cmd 不变。",
+      "metadata": {
+        "evidence": "test_real_cache_coherence_campaign / verify_cache / stall_positions；CoherenceAgent._stall",
+        "verification_layer": "design_external"
+      }
+    },
+    {
+      "id": "CACHE-COH-STALL-MIDDLE",
+      "title": "中间数据拍背压",
+      "component": "Coherence 时序",
+      "description": "clean/dirty hit 的第 4 拍停两周期；ready 持续低时 valid/data 稳定，接受后的完整 cmd/data 序列正确。末拍 cmd 按 RTL 接受条件检查，不要求 ready 翻转前后 cmd 不变。",
+      "metadata": {
+        "evidence": "test_real_cache_coherence_campaign / verify_cache / stall_positions；CoherenceAgent._stall",
+        "verification_layer": "design_external"
+      }
+    },
+    {
+      "id": "CACHE-COH-STALL-LAST",
+      "title": "末数据拍背压",
+      "component": "Coherence 时序",
+      "description": "clean/dirty hit 的第 8 拍停两周期；ready 持续低时 valid/data 稳定，接受后的完整 cmd/data 序列正确。末拍 cmd 按 RTL 接受条件检查，不要求 ready 翻转前后 cmd 不变。",
+      "metadata": {
+        "evidence": "test_real_cache_coherence_campaign / verify_cache / stall_positions；CoherenceAgent._stall",
+        "verification_layer": "design_external"
+      }
+    },
+    {
+      "id": "CACHE-COH-ISOLATION",
+      "title": "probe 不产生 CPU/memory/MMIO 事务",
+      "component": "Coherence",
+      "description": "18 笔 probe 前后比较 memory/MMIO 请求数不变，完成时 CPU response valid 为低；这是串行 probe 场景，不代表并发仲裁已验证。",
+      "metadata": {
+        "evidence": "test_real_cache_coherence_campaign / verify_cache / probe 辅助函数",
+        "verification_layer": "design_external"
+      }
+    },
+    {
+      "id": "CACHE-COH-RETAIN",
+      "title": "probe 后保留 cache line",
+      "component": "Coherence",
+      "description": "clean/dirty probe 后 CPU 读回全部八个 word；无新 refill，数据正确，backing memory 仍为旧的 clean 值。",
+      "metadata": {
+        "evidence": "test_real_cache_coherence_campaign / verify_cache / dirty_words 后续 CPU read",
+        "verification_layer": "design_external"
+      }
+    },
+    {
+      "id": "CACHE-COH-QUIET",
+      "title": "每笔 probe 后有限静默检查",
+      "component": "Coherence",
+      "description": "每笔 probe 完成后观察三周期并在 campaign 末尾再次检查；不得出现额外 coherence 响应。窗口外不作无限保证。",
+      "metadata": {
+        "evidence": "test_real_cache_coherence_campaign / CoherenceAgent.check_quiet",
+        "verification_layer": "design_external"
+      }
+    },
+    {
+      "id": "CACHE-CHECK-HEADER",
+      "title": "拒绝错误响应头",
+      "component": "检查器",
+      "description": "翻转 header cmd，必须抛含 cmd 差异的 ScoreboardMismatch。 注入在 Monitor 交付边界；故障必须保留 failed 产物并清理组件，allow_known_bugs 不能屏蔽这些错误。",
+      "metadata": {
+        "evidence": "test_coherence_rejects_faulty_observations[header]",
+        "verification_layer": "testbench"
+      }
+    },
+    {
+      "id": "CACHE-CHECK-DATA",
+      "title": "拒绝错误 release 数据",
+      "component": "检查器",
+      "description": "翻转一个数据位，必须抛含 data 差异的 ScoreboardMismatch。 注入在 Monitor 交付边界；故障必须保留 failed 产物并清理组件，allow_known_bugs 不能屏蔽这些错误。",
+      "metadata": {
+        "evidence": "test_coherence_rejects_faulty_observations[data]",
+        "verification_layer": "testbench"
+      }
+    },
+    {
+      "id": "CACHE-CHECK-LAST",
+      "title": "拒绝错误末拍命令",
+      "component": "检查器",
+      "description": "翻转最后数据拍 cmd，必须抛含 cmd 差异的 ScoreboardMismatch。 注入在 Monitor 交付边界；故障必须保留 failed 产物并清理组件，allow_known_bugs 不能屏蔽这些错误。",
+      "metadata": {
+        "evidence": "test_coherence_rejects_faulty_observations[last]",
+        "verification_layer": "testbench"
+      }
+    },
+    {
+      "id": "CACHE-CHECK-MISSING",
+      "title": "拒绝漏拍",
+      "component": "检查器",
+      "description": "漏掉一个数据拍，在响应预算内不能收齐九拍，必须超时并报告 received 8/9 beats。 注入在 Monitor 交付边界；故障必须保留 failed 产物并清理组件，allow_known_bugs 不能屏蔽这些错误。",
+      "metadata": {
+        "evidence": "test_coherence_rejects_faulty_observations[missing]",
+        "verification_layer": "testbench"
+      }
+    },
+    {
+      "id": "CACHE-CHECK-DUPLICATE",
+      "title": "拒绝重复拍",
+      "component": "检查器",
+      "description": "重复交付一个观察快照，残留真实响应必须被静默窗口检查拒绝。 注入在 Monitor 交付边界；故障必须保留 failed 产物并清理组件，allow_known_bugs 不能屏蔽这些错误。",
+      "metadata": {
+        "evidence": "test_coherence_rejects_faulty_observations[duplicate]",
+        "verification_layer": "testbench"
+      }
+    },
+    {
+      "id": "CACHE-CHECK-STALE",
+      "title": "拒绝旧响应",
+      "component": "检查器",
+      "description": "把观察 tick 改为早于本次 probe 接受时刻，必须报告 precedes this probe。 注入在 Monitor 交付边界；故障必须保留 failed 产物并清理组件，allow_known_bugs 不能屏蔽这些错误。",
+      "metadata": {
+        "evidence": "test_coherence_rejects_faulty_observations[stale]",
+        "verification_layer": "testbench"
+      }
+    },
+    {
+      "id": "CACHE-COH-CANCEL",
+      "title": "release 中途外部取消",
+      "component": "生命周期",
+      "description": "收到首个 release 数据时取消 campaign；CancelledError 传播，失败状态保留，任务/watcher/信号 ownership 释放，Agent/Monitor/Driver 关闭，宿主任务仍运行。",
+      "metadata": {
+        "evidence": "test_cancel_during_release",
+        "verification_layer": "testbench"
+      }
+    },
+    {
+      "id": "CACHE-CPU-VALID-HOLD",
+      "title": "CPU 受阻响应 valid 连续性",
+      "component": "CPU 时序",
+      "description": "CPU 受阻响应 valid 必须持续到接受；CacheDriver 当拍拒绝 valid 撤回，独立负例在观察边界撤回一拍并核对明确异常。故障不贡献 DUT bins。",
+      "metadata": {
+        "evidence": "test_cpu_checker_rejects_valid_withdrawal；正常 response stall 与 test_refill_finishes_while_cpu_response_is_stalled",
+        "verification_layer": "design_external"
+      }
+    },
+    {
+      "id": "CACHE-CPU-OVERLAP",
+      "title": "early-response 后重叠 CPU 请求",
+      "component": "待验证缺陷",
+      "description": "独立同步探针已发现第二请求被接受后无响应；当前 pytest campaign 不能稳定复现，不能以其通过认定修复。需要将稳定复现的激励与检查落实为回归；普通 campaign 的通过不能关闭该缺陷。",
+      "metadata": {
+        "evidence": "cache_direct_protocol_probe.py（单独运行的已知失败）",
+        "verification_layer": "design_external"
+      }
+    },
+    {
+      "id": "CACHE-COH-CPU-CONCURRENT",
+      "title": "CPU 与 coherence 并发仲裁",
+      "component": "并发仲裁",
+      "description": "CPU/probe 同时请求时固定 probe 优先；release 与 CPU 的 SRAM 读竞争时端口0优先并最终完成。另在 CPU refill/writeback 进行中提交 probe，核对两端完成、CPU 数据及八拍 release。",
+      "metadata": {
+        "evidence": "test_probe_competes_with_cpu_and_sram；test_probe_waits_for_cpu_memory_transaction[refill/writeback]",
+        "verification_layer": "design_external"
+      }
+    },
+    {
+      "id": "CACHE-FLUSH",
+      "title": "当前写型 Cache 禁止 Stage3 flush",
+      "component": "设计配置约束",
+      "description": "当前可写 RTL 禁止 Stage3 flush；模块及完整 Cache 的独立进程驱动相应 io_flush 位，保存真实违例条件，核对指定 assertion、fatal 源码位置、SIGABRT 和终止前的 RTL 覆盖计数。该负例不视为正常 cache 清空。",
+      "metadata": {
+        "evidence": "test_stage3_rtl_assertions[flush] / test_full_cache_rtl_assertions[flush]；rtl-assertion.log / assertion-witness.json / verilator-coverage.dat",
+        "verification_layer": "design_external",
+        "rtl": "example/CacheSignalCFG/Cache.v:948",
+        "qualification": "RTL 配置约束，需开启并验证 assertion 生效；不注入当前正常 campaign"
+      }
+    },
+    {
+      "id": "CACHE-INT-PIPE-S1-JOINT-READY",
+      "title": "Stage1 同时取得两路 SRAM 许可",
+      "component": "设计内部 / 流水线准入与退休",
+      "description": "触发：metadata/data ready 分别阻塞，再共同 ready。检查：只有两路 ready 且流水允许时请求向 Stage2 前进；单路完成不能丢请求。",
+      "metadata": {
+        "verification_layer": "design_internal",
+        "rtl": "example/CacheSignalCFG/Cache.v:42",
+        "module": "CacheStage1",
+        "anchor": "io_in_ready",
+        "observation": "s1 两路 SRAM ready、s1 输入/输出接受",
+        "required_scenarios": [
+          "meta_blocked",
+          "data_blocked",
+          "both_ready"
+        ],
+        "sampling": "DriveStable 读取全部驱动完成后的条件；紧邻 RisingEdge 提交后核对寄存器。Stage1 组合真值表显式标记 settled_combinational。",
+        "closure": "各 case 实際采样的必需场景合并达到目标，相关属性与端到端检查通过；未采样部分不报告覆盖率。",
+        "evidence": "cache_internal_coverage.py；本次运行的 internal-checks.json / internal-functional-coverage.json（本地产物）",
+        "basis": "当前 RTL 提取的验证义务，需对照接口规格/设计意图评审；不得以复制 RTL 逻辑作为唯一 oracle。"
+      }
+    },
+    {
+      "id": "CACHE-INT-PIPE-S1-INDEX",
+      "title": "metadata/data 地址分解一致",
+      "component": "设计内部 / 流水线准入与退休",
+      "description": "触发：跨 word、set、tag 边界的地址进入 Stage1。检查：metadata 索引为 addr[12:6]，data 索引为 {set,addr[5:3]}，改变 tag 不改变数组行索引。",
+      "metadata": {
+        "verification_layer": "design_internal",
+        "rtl": "example/CacheSignalCFG/Cache.v:51",
+        "module": "CacheStage1",
+        "anchor": "io_metaReadBus_req_bits_setIdx",
+        "observation": "s1 两路读地址与独立地址分解",
+        "required_scenarios": [
+          "word_boundary",
+          "set_boundary",
+          "tag_boundary"
+        ],
+        "sampling": "DriveStable 读取全部驱动完成后的条件；紧邻 RisingEdge 提交后核对寄存器。Stage1 组合真值表显式标记 settled_combinational。",
+        "closure": "各 case 实際采样的必需场景合并达到目标，相关属性与端到端检查通过；未采样部分不报告覆盖率。",
+        "evidence": "cache_internal_coverage.py；本次运行的 internal-checks.json / internal-functional-coverage.json（本地产物）",
+        "basis": "当前 RTL 提取的验证义务，需对照接口规格/设计意图评审；不得以复制 RTL 逻辑作为唯一 oracle。"
+      }
+    },
+    {
+      "id": "CACHE-INT-PIPE-S2-HOLD",
+      "title": "Stage1→2 payload 装载与保持",
+      "component": "设计内部 / 流水线准入与退休",
+      "description": "触发：Stage1 接受新请求和 Stage2 受阻两种情况。检查：只在上游接受时更新寄存 payload，受阻时 addr/cmd/size/mask/data/user 保持。",
+      "metadata": {
+        "verification_layer": "design_internal",
+        "rtl": "example/CacheSignalCFG/Cache.v:2833",
+        "module": "Cache",
+        "anchor": "always @(posedge clock)",
+        "observation": "valid、s2_io_in_bits_r_*、s1 接受",
+        "required_scenarios": [
+          "load",
+          "stall",
+          "replace"
+        ],
+        "sampling": "DriveStable 读取全部驱动完成后的条件；紧邻 RisingEdge 提交后核对寄存器。Stage1 组合真值表显式标记 settled_combinational。",
+        "closure": "各 case 实際采样的必需场景合并达到目标，相关属性与端到端检查通过；未采样部分不报告覆盖率。",
+        "evidence": "cache_internal_coverage.py；本次运行的 internal-checks.json / internal-functional-coverage.json（本地产物）",
+        "basis": "当前 RTL 提取的验证义务，需对照接口规格/设计意图评审；不得以复制 RTL 逻辑作为唯一 oracle。"
+      }
+    },
+    {
+      "id": "CACHE-INT-PIPE-S3-HOLD",
+      "title": "Stage2→3 上下文原子装载",
+      "component": "设计内部 / 流水线准入与退休",
+      "description": "触发：Stage2 接受传给 Stage3；另施加 Stage3 受阻。检查：请求、hit/waymask/mmio、forwarding 及四路数据/metadata 同时锁存，受阻不部分更新。",
+      "metadata": {
+        "verification_layer": "design_internal",
+        "rtl": "example/CacheSignalCFG/Cache.v:2866",
+        "module": "Cache",
+        "anchor": "if (_T_4)",
+        "observation": "valid_1、s3_io_in_bits_r_*、s2 接受",
+        "required_scenarios": [
+          "load",
+          "stall",
+          "same_cycle_finish_new"
+        ],
+        "sampling": "DriveStable 读取全部驱动完成后的条件；紧邻 RisingEdge 提交后核对寄存器。Stage1 组合真值表显式标记 settled_combinational。",
+        "closure": "各 case 实際采样的必需场景合并达到目标，相关属性与端到端检查通过；未采样部分不报告覆盖率。",
+        "evidence": "cache_internal_coverage.py；本次运行的 internal-checks.json / internal-functional-coverage.json（本地产物）",
+        "basis": "当前 RTL 提取的验证义务，需对照接口规格/设计意图评审；不得以复制 RTL 逻辑作为唯一 oracle。"
+      }
+    },
+    {
+      "id": "CACHE-INT-PIPE-RETIRE",
+      "title": "退休不能等同于早期响应",
+      "component": "设计内部 / 流水线准入与退休",
+      "description": "触发：read miss 提前交付 demanded word，后续 refill 尚未结束。检查：旧 Stage3 请求保持有效直到真正 finish；同拍新请求与 finish 时替换优先且无丢失。",
+      "metadata": {
+        "verification_layer": "design_internal",
+        "rtl": "example/CacheSignalCFG/Cache.v:2394",
+        "module": "Cache",
+        "anchor": "s3_io_isFinish",
+        "observation": "valid_1、s3_io_isFinish、alreadyOutFire、输入/输出序号",
+        "required_scenarios": [
+          "early_response",
+          "final_refill",
+          "finish_and_new"
+        ],
+        "sampling": "DriveStable 读取全部驱动完成后的条件；紧邻 RisingEdge 提交后核对寄存器。Stage1 组合真值表显式标记 settled_combinational。",
+        "closure": "各 case 实際采样的必需场景合并达到目标，相关属性与端到端检查通过；未采样部分不报告覆盖率。",
+        "evidence": "cache_internal_coverage.py；本次运行的 internal-checks.json / internal-functional-coverage.json（本地产物）",
+        "basis": "当前 RTL 提取的验证义务，需对照接口规格/设计意图评审；不得以复制 RTL 逻辑作为唯一 oracle。"
+      }
+    },
+    {
+      "id": "CACHE-INT-PIPE-S2-CONSUME",
+      "title": "Stage2 valid 的消费与补入",
+      "component": "设计内部 / 流水线准入与退休",
+      "description": "触发：Stage2 被 Stage3 接受，分别有/无 Stage1 同拍补入。检查：flush 优先清空，否则无补入则清空，有补入则保持 valid 且 payload 对应新请求。",
+      "metadata": {
+        "verification_layer": "design_internal",
+        "rtl": "example/CacheSignalCFG/Cache.v:2383",
+        "module": "Cache",
+        "anchor": "valid",
+        "observation": "顶层 valid、s1/s2 握手及 payload",
+        "required_scenarios": [
+          "consume_only",
+          "consume_and_fill"
+        ],
+        "sampling": "DriveStable 读取全部驱动完成后的条件；紧邻 RisingEdge 提交后核对寄存器。Stage1 组合真值表显式标记 settled_combinational。",
+        "closure": "各 case 实際采样的必需场景合并达到目标，相关属性与端到端检查通过；未采样部分不报告覆盖率。",
+        "evidence": "cache_internal_coverage.py；本次运行的 internal-checks.json / internal-functional-coverage.json（本地产物）",
+        "basis": "当前 RTL 提取的验证义务，需对照接口规格/设计意图评审；不得以复制 RTL 逻辑作为唯一 oracle。"
+      }
+    },
+    {
+      "id": "CACHE-INT-PIPE-S2-FLUSH",
+      "title": "Stage2 flush 优先清空",
+      "component": "设计内部 / 流水线准入与退休",
+      "description": "触发：io_flush[0] 在空流水、Stage2 受阻或 Stage1 同拍接受时有效。检查：下一拍 Stage2 valid 清零，已进入 Stage3 的请求不被取消；被清空请求无响应，后续访问正常。",
+      "metadata": {
+        "verification_layer": "design_internal",
+        "rtl": "example/CacheSignalCFG/Cache.v:2836",
+        "module": "Cache",
+        "anchor": "valid",
+        "observation": "io_flush[0]、valid、valid_1、CPU 响应及恢复访问",
+        "required_scenarios": ["empty", "held", "accept_same_cycle"],
+        "sampling": "DriveStable 读取实际 flush/接受条件；紧邻 RisingEdge 核对寄存器，并用独立 memory 模型检查保留和恢复请求。",
+        "closure": "三个必需场景实际激活且无错误响应；flush[1] 在当前可写配置下禁止，不并入合法 flush 结论。",
+        "evidence": "test_cache_internal.py::test_stage2_flush_discards_only_stage2_request；flush-witness.json / internal-checks.json（本地产物）",
+        "basis": "Cache.v 流水寄存器优先级及 Stage3 的可写配置断言。"
+      }
+    },
+    {
+      "id": "CACHE-INT-PIPE-EMPTY",
+      "title": "io_empty 只表达流水占用",
+      "component": "设计内部 / 流水线准入与退休",
+      "description": "触发：空流水、仅 Stage2、仅 Stage3、两级占用；另保留 dirty 行。检查：io_empty 仅当两级 valid 均低为高；dirty 行存在不影响它。",
+      "metadata": {
+        "verification_layer": "design_internal",
+        "rtl": "example/CacheSignalCFG/Cache.v:2696",
+        "module": "Cache",
+        "anchor": "assign io_empty",
+        "observation": "valid/valid_1、io_empty、已知 dirty line",
+        "required_scenarios": [
+          "empty_clean",
+          "empty_dirty",
+          "s2_only",
+          "s3_only",
+          "both"
+        ],
+        "sampling": "DriveStable 读取全部驱动完成后的条件；紧邻 RisingEdge 提交后核对寄存器。Stage1 组合真值表显式标记 settled_combinational。",
+        "closure": "各 case 实際采样的必需场景合并达到目标，相关属性与端到端检查通过；未采样部分不报告覆盖率。",
+        "evidence": "cache_internal_coverage.py；本次运行的 internal-checks.json / internal-functional-coverage.json（本地产物）",
+        "basis": "当前 RTL 提取的验证义务，需对照接口规格/设计意图评审；不得以复制 RTL 逻辑作为唯一 oracle。"
+      }
+    },
+    {
+      "id": "CACHE-INT-LOOKUP-HIT-EACH-WAY",
+      "title": "四路 valid 与 tag 命中",
+      "component": "设计内部 / 命中、替换与地址属性",
+      "description": "触发：每路分别安装目标 tag，同时改变其他路内容。检查：只选 valid 且 tag 相等的路；输出 hit/waymask 与独立 tag/valid 模型一致。",
+      "metadata": {
+        "verification_layer": "design_internal",
+        "rtl": "example/CacheSignalCFG/Cache.v:156",
+        "module": "CacheStage2",
+        "anchor": "_hitVec_T_2",
+        "observation": "metaWay_*、hitVec、hit、waymask",
+        "required_scenarios": [
+          "way0",
+          "way1",
+          "way2",
+          "way3"
+        ],
+        "sampling": "DriveStable 读取全部驱动完成后的条件；紧邻 RisingEdge 提交后核对寄存器。Stage1 组合真值表显式标记 settled_combinational。",
+        "closure": "各 case 实際采样的必需场景合并达到目标，相关属性与端到端检查通过；未采样部分不报告覆盖率。",
+        "evidence": "cache_internal_coverage.py；本次运行的 internal-checks.json / internal-functional-coverage.json（本地产物）",
+        "basis": "当前 RTL 提取的验证义务，需对照接口规格/设计意图评审；不得以复制 RTL 逻辑作为唯一 oracle。"
+      }
+    },
+    {
+      "id": "CACHE-INT-LOOKUP-INVALID-TAG",
+      "title": "无效行的旧 tag 不可命中",
+      "component": "设计内部 / 命中、替换与地址属性",
+      "description": "触发：某路 tag 等于请求但 valid=0。检查：该路 hitVec=0；不能因残余 tag 产生 hit。",
+      "metadata": {
+        "verification_layer": "design_internal",
+        "rtl": "example/CacheSignalCFG/Cache.v:149",
+        "module": "CacheStage2",
+        "anchor": "metaWay_0_valid",
+        "observation": "有效位、tag、hitVec",
+        "required_scenarios": [
+          "way0",
+          "way1",
+          "way2",
+          "way3"
+        ],
+        "sampling": "DriveStable 读取全部驱动完成后的条件；紧邻 RisingEdge 提交后核对寄存器。Stage1 组合真值表显式标记 settled_combinational。",
+        "closure": "各 case 实際采样的必需场景合并达到目标，相关属性与端到端检查通过；未采样部分不报告覆盖率。",
+        "evidence": "cache_internal_coverage.py；本次运行的 internal-checks.json / internal-functional-coverage.json（本地产物）",
+        "basis": "当前 RTL 提取的验证义务，需对照接口规格/设计意图评审；不得以复制 RTL 逻辑作为唯一 oracle。"
+      }
+    },
+    {
+      "id": "CACHE-INT-LOOKUP-NO-INPUT",
+      "title": "无输入时不产生有效命中",
+      "component": "设计内部 / 命中、替换与地址属性",
+      "description": "触发：io_in_valid=0，数组数据恰巧与请求地址相同。检查：hitVec/hit 必须为零，不能触发写回或命中副作用。",
+      "metadata": {
+        "verification_layer": "design_internal",
+        "rtl": "example/CacheSignalCFG/Cache.v:214",
+        "module": "CacheStage2",
+        "anchor": "io_out_bits_hit",
+        "observation": "s2 输入 valid、hitVec、s3 副作用门控",
+        "required_scenarios": [
+          "tag_equal",
+          "tag_unequal"
+        ],
+        "sampling": "DriveStable 读取全部驱动完成后的条件；紧邻 RisingEdge 提交后核对寄存器。Stage1 组合真值表显式标记 settled_combinational。",
+        "closure": "各 case 实際采样的必需场景合并达到目标，相关属性与端到端检查通过；未采样部分不报告覆盖率。",
+        "evidence": "cache_internal_coverage.py；本次运行的 internal-checks.json / internal-functional-coverage.json（本地产物）",
+        "basis": "当前 RTL 提取的验证义务，需对照接口规格/设计意图评审；不得以复制 RTL 逻辑作为唯一 oracle。"
+      }
+    },
+    {
+      "id": "CACHE-INT-LOOKUP-INVALID-FIRST",
+      "title": "无效路优先于替换候选",
+      "component": "设计内部 / 命中、替换与地址属性",
+      "description": "触发：miss 且至少一条 invalid，LFSR 候选指向 valid way。检查：分配 invalid way，不驱逐任何现存有效行。",
+      "metadata": {
+        "verification_layer": "design_internal",
+        "rtl": "example/CacheSignalCFG/Cache.v:175",
+        "module": "CacheStage2",
+        "anchor": "_waymask_T",
+        "observation": "invalidVec、victimWaymask、waymask",
+        "required_scenarios": [
+          "one_invalid",
+          "multiple_invalid"
+        ],
+        "sampling": "DriveStable 读取全部驱动完成后的条件；紧邻 RisingEdge 提交后核对寄存器。Stage1 组合真值表显式标记 settled_combinational。",
+        "closure": "各 case 实際采样的必需场景合并达到目标，相关属性与端到端检查通过；未采样部分不报告覆盖率。",
+        "evidence": "cache_internal_coverage.py；本次运行的 internal-checks.json / internal-functional-coverage.json（本地产物）",
+        "basis": "当前 RTL 提取的验证义务，需对照接口规格/设计意图评审；不得以复制 RTL 逻辑作为唯一 oracle。"
+      }
+    },
+    {
+      "id": "CACHE-INT-LOOKUP-INVALID-PRIORITY",
+      "title": "多个 invalid way 的优先顺序",
+      "component": "设计内部 / 命中、替换与地址属性",
+      "description": "触发：遍历非零 invalidVec 组合。检查：选择最高编号的 invalid way；各组合的输出须为 one-hot。",
+      "metadata": {
+        "verification_layer": "design_internal",
+        "rtl": "example/CacheSignalCFG/Cache.v:172",
+        "module": "CacheStage2",
+        "anchor": "_refillInvalidWaymask_T_3",
+        "observation": "invalidVec、refillInvalidWaymask",
+        "required_scenarios": [
+          "invalidVec=1",
+          "invalidVec=2",
+          "invalidVec=3",
+          "invalidVec=4",
+          "invalidVec=5",
+          "invalidVec=6",
+          "invalidVec=7",
+          "invalidVec=8",
+          "invalidVec=9",
+          "invalidVec=10",
+          "invalidVec=11",
+          "invalidVec=12",
+          "invalidVec=13",
+          "invalidVec=14",
+          "invalidVec=15"
+        ],
+        "sampling": "DriveStable 读取全部驱动完成后的条件；紧邻 RisingEdge 提交后核对寄存器。Stage1 组合真值表显式标记 settled_combinational。",
+        "closure": "各 case 实際采样的必需场景合并达到目标，相关属性与端到端检查通过；未采样部分不报告覆盖率。",
+        "evidence": "cache_internal_coverage.py；本次运行的 internal-checks.json / internal-functional-coverage.json（本地产物）",
+        "basis": "当前 RTL 提取的验证义务，需对照接口规格/设计意图评审；不得以复制 RTL 逻辑作为唯一 oracle。"
+      }
+    },
+    {
+      "id": "CACHE-INT-LOOKUP-ALL-VALID",
+      "title": "全 valid miss 使用 LFSR 候选",
+      "component": "设计内部 / 命中、替换与地址属性",
+      "description": "触发：四路全部有效且均不命中。检查：waymask=1<<LFSR低2位；每路都能被选，且只替换一条。",
+      "metadata": {
+        "verification_layer": "design_internal",
+        "rtl": "example/CacheSignalCFG/Cache.v:165",
+        "module": "CacheStage2",
+        "anchor": "victimWaymask",
+        "observation": "victimWaymask_lfsr、waymask",
+        "required_scenarios": [
+          "candidate0",
+          "candidate1",
+          "candidate2",
+          "candidate3"
+        ],
+        "sampling": "DriveStable 读取全部驱动完成后的条件；紧邻 RisingEdge 提交后核对寄存器。Stage1 组合真值表显式标记 settled_combinational。",
+        "closure": "各 case 实際采样的必需场景合并达到目标，相关属性与端到端检查通过；未采样部分不报告覆盖率。",
+        "evidence": "cache_internal_coverage.py；本次运行的 internal-checks.json / internal-functional-coverage.json（本地产物）",
+        "basis": "当前 RTL 提取的验证义务，需对照接口规格/设计意图评审；不得以复制 RTL 逻辑作为唯一 oracle。"
+      }
+    },
+    {
+      "id": "CACHE-INT-LOOKUP-ONEHOT",
+      "title": "waymask 的单路约束",
+      "component": "设计内部 / 命中、替换与地址属性",
+      "description": "触发：hit、存在 invalid 的 miss、全 valid miss。检查：合法请求 waymask 恰为一位；重复 tag 造成多命中应触发对应错误检查。",
+      "metadata": {
+        "verification_layer": "design_internal",
+        "rtl": "example/CacheSignalCFG/Cache.v:176",
+        "module": "CacheStage2",
+        "anchor": "waymask",
+        "observation": "waymask、hitVec、RTL assertion 事件",
+        "required_scenarios": [
+          "hit",
+          "invalid_miss",
+          "victim_miss",
+          "duplicate_tag_negative"
+        ],
+        "sampling": "DriveStable 读取全部驱动完成后的条件；紧邻 RisingEdge 提交后核对寄存器。Stage1 组合真值表显式标记 settled_combinational。",
+        "closure": "各 case 实際采样的必需场景合并达到目标，相关属性与端到端检查通过；未采样部分不报告覆盖率。",
+        "evidence": "cache_internal_coverage.py；本次运行的 internal-checks.json / internal-functional-coverage.json（本地产物）",
+        "basis": "当前 RTL 提取的验证义务，需对照接口规格/设计意图评审；不得以复制 RTL 逻辑作为唯一 oracle。"
+      }
+    },
+    {
+      "id": "CACHE-INT-LOOKUP-LFSR",
+      "title": "替换 LFSR 初始化、推进和零态恢复",
+      "component": "设计内部 / 命中、替换与地址属性",
+      "description": "触发：reset、普通推进、模块级注入全零状态。检查：种子为 0x1234567887654321；按当前多项式推进，零态下一拍回到1，不能锁死。",
+      "metadata": {
+        "verification_layer": "design_internal",
+        "rtl": "example/CacheSignalCFG/Cache.v:238",
+        "module": "CacheStage2",
+        "anchor": "if (reset)",
+        "observation": "victimWaymask_lfsr 前后值；独立 LFSR 序列",
+        "required_scenarios": [
+          "reset_seed",
+          "advance",
+          "zero_recovery"
+        ],
+        "sampling": "DriveStable 读取全部驱动完成后的条件；紧邻 RisingEdge 提交后核对寄存器。Stage1 组合真值表显式标记 settled_combinational。",
+        "closure": "各 case 实際采样的必需场景合并达到目标，相关属性与端到端检查通过；未采样部分不报告覆盖率。",
+        "evidence": "cache_internal_coverage.py；本次运行的 internal-checks.json / internal-functional-coverage.json（本地产物）",
+        "basis": "当前 RTL 提取的验证义务，需对照接口规格/设计意图评审；不得以复制 RTL 逻辑作为唯一 oracle。"
+      }
+    },
+    {
+      "id": "CACHE-INT-LOOKUP-MMIO-RANGES",
+      "title": "两段 MMIO 范围及边界",
+      "component": "设计内部 / 命中、替换与地址属性",
+      "description": "触发：访问 0x3xxxxxxx 与 0x40000000..0x7fffffff 的边界内外。检查：仅定义范围判为 MMIO，附近可缓存地址不能误旁路；边界在 Stage2 模块级输入检查，外部 MMIO responder 当前仅覆盖 0x3 段。",
+      "metadata": {
+        "verification_layer": "design_internal",
+        "rtl": "example/CacheSignalCFG/Cache.v:182",
+        "module": "CacheStage2",
+        "anchor": "_io_out_bits_mmio_T",
+        "observation": "s2 mmio、内存/MMIO 请求、独立范围判定",
+        "required_scenarios": [
+          "0x2fffffff",
+          "0x30000000",
+          "0x3fffffff",
+          "0x40000000",
+          "0x7fffffff",
+          "0x80000000"
+        ],
+        "sampling": "DriveStable 读取全部驱动完成后的条件；紧邻 RisingEdge 提交后核对寄存器。Stage1 组合真值表显式标记 settled_combinational。",
+        "closure": "各 case 实際采样的必需场景合并达到目标，相关属性与端到端检查通过；未采样部分不报告覆盖率。",
+        "evidence": "cache_internal_coverage.py；本次运行的 internal-checks.json / internal-functional-coverage.json（本地产物）",
+        "basis": "当前 RTL 提取的验证义务，需对照接口规格/设计意图评审；不得以复制 RTL 逻辑作为唯一 oracle。"
+      }
+    },
+    {
+      "id": "CACHE-INT-FORWARD-META-SAME-SET",
+      "title": "同 set metadata 写入旁路",
+      "component": "设计内部 / metadata 与 data forwarding",
+      "description": "触发：Stage2 查找与 metadata 写发生同拍，set 相同。检查：被写 way 的 tag/dirty/valid 使用最新写入值，其他 way 仍用数组响应。",
+      "metadata": {
+        "verification_layer": "design_internal",
+        "rtl": "example/CacheSignalCFG/Cache.v:131",
+        "module": "CacheStage2",
+        "anchor": "isForwardMeta",
+        "observation": "isForwardMeta、forwardWaymask、metaWay_*",
+        "required_scenarios": [
+          "way0",
+          "way1",
+          "way2",
+          "way3",
+          "hit_created",
+          "dirty_updated"
+        ],
+        "sampling": "DriveStable 读取全部驱动完成后的条件；紧邻 RisingEdge 提交后核对寄存器。Stage1 组合真值表显式标记 settled_combinational。",
+        "closure": "各 case 实際采样的必需场景合并达到目标，相关属性与端到端检查通过；未采样部分不报告覆盖率。",
+        "evidence": "cache_internal_coverage.py；本次运行的 internal-checks.json / internal-functional-coverage.json（本地产物）",
+        "basis": "当前 RTL 提取的验证义务，需对照接口规格/设计意图评审；不得以复制 RTL 逻辑作为唯一 oracle。"
+      }
+    },
+    {
+      "id": "CACHE-INT-FORWARD-META-DIFFERENT",
+      "title": "不同 set 不触发 metadata 旁路",
+      "component": "设计内部 / metadata 与 data forwarding",
+      "description": "触发：metadata 写入与 Stage2 请求 set 不同。检查：isForwardMeta=0，Stage2 命中结果不受该写影响。",
+      "metadata": {
+        "verification_layer": "design_internal",
+        "rtl": "example/CacheSignalCFG/Cache.v:131",
+        "module": "CacheStage2",
+        "anchor": "isForwardMeta",
+        "observation": "set 索引、isForwardMeta、hitVec",
+        "required_scenarios": [
+          "adjacent_set",
+          "different_tag_same_word"
+        ],
+        "sampling": "DriveStable 读取全部驱动完成后的条件；紧邻 RisingEdge 提交后核对寄存器。Stage1 组合真值表显式标记 settled_combinational。",
+        "closure": "各 case 实際采样的必需场景合并达到目标，相关属性与端到端检查通过；未采样部分不报告覆盖率。",
+        "evidence": "cache_internal_coverage.py；本次运行的 internal-checks.json / internal-functional-coverage.json（本地产物）",
+        "basis": "当前 RTL 提取的验证义务，需对照接口规格/设计意图评审；不得以复制 RTL 逻辑作为唯一 oracle。"
+      }
+    },
+    {
+      "id": "CACHE-INT-FORWARD-META-HOLD",
+      "title": "受阻请求保留 metadata forwarding",
+      "component": "设计内部 / metadata 与 data forwarding",
+      "description": "触发：Stage2 受阻期间发生同 set 写，下一拍写端空闲。检查：forwardMetaReg_* 保存该写，后续仍取新 metadata 而非旧 SRAM 响应。",
+      "metadata": {
+        "verification_layer": "design_internal",
+        "rtl": "example/CacheSignalCFG/Cache.v:223",
+        "module": "CacheStage2",
+        "anchor": "isForwardMetaReg",
+        "observation": "isForwardMetaReg、forwardMetaReg_*、Stage2 stall",
+        "required_scenarios": [
+          "single_update",
+          "multi_cycle_stall"
+        ],
+        "sampling": "DriveStable 读取全部驱动完成后的条件；紧邻 RisingEdge 提交后核对寄存器。Stage1 组合真值表显式标记 settled_combinational。",
+        "closure": "各 case 实際采样的必需场景合并达到目标，相关属性与端到端检查通过；未采样部分不报告覆盖率。",
+        "evidence": "cache_internal_coverage.py；本次运行的 internal-checks.json / internal-functional-coverage.json（本地产物）",
+        "basis": "当前 RTL 提取的验证义务，需对照接口规格/设计意图评审；不得以复制 RTL 逻辑作为唯一 oracle。"
+      }
+    },
+    {
+      "id": "CACHE-INT-FORWARD-META-NEWEST",
+      "title": "新 metadata 写覆盖旧保存值",
+      "component": "设计内部 / metadata 与 data forwarding",
+      "description": "触发：已有 pending forwarding，随后同 set 再写。检查：本拍优先当前写，寄存值同步更新，下一拍使用最新版本。",
+      "metadata": {
+        "verification_layer": "design_internal",
+        "rtl": "example/CacheSignalCFG/Cache.v:140",
+        "module": "CacheStage2",
+        "anchor": "_GEN_3",
+        "observation": "当前写、保存副本、metaWay_*",
+        "required_scenarios": [
+          "same_way_twice",
+          "different_way_followup"
+        ],
+        "sampling": "DriveStable 读取全部驱动完成后的条件；紧邻 RisingEdge 提交后核对寄存器。Stage1 组合真值表显式标记 settled_combinational。",
+        "closure": "各 case 实際采样的必需场景合并达到目标，相关属性与端到端检查通过；未采样部分不报告覆盖率。",
+        "evidence": "cache_internal_coverage.py；本次运行的 internal-checks.json / internal-functional-coverage.json（本地产物）",
+        "basis": "当前 RTL 提取的验证义务，需对照接口规格/设计意图评审；不得以复制 RTL 逻辑作为唯一 oracle。"
+      }
+    },
+    {
+      "id": "CACHE-INT-FORWARD-META-CLEAR",
+      "title": "metadata forwarding 上下文清除",
+      "component": "设计内部 / metadata 与 data forwarding",
+      "description": "触发：Stage2 消费当前请求或出现空槽。检查：isForwardMetaReg 清零，下一请求不得继承上一请求的旁路资格。",
+      "metadata": {
+        "verification_layer": "design_internal",
+        "rtl": "example/CacheSignalCFG/Cache.v:224",
+        "module": "CacheStage2",
+        "anchor": "_T | ~io_in_valid",
+        "observation": "forward flag、请求序号与接受历史",
+        "required_scenarios": [
+          "consumed",
+          "bubble",
+          "reset"
+        ],
+        "sampling": "DriveStable 读取全部驱动完成后的条件；紧邻 RisingEdge 提交后核对寄存器。Stage1 组合真值表显式标记 settled_combinational。",
+        "closure": "各 case 实際采样的必需场景合并达到目标，相关属性与端到端检查通过；未采样部分不报告覆盖率。",
+        "evidence": "cache_internal_coverage.py；本次运行的 internal-checks.json / internal-functional-coverage.json（本地产物）",
+        "basis": "当前 RTL 提取的验证义务，需对照接口规格/设计意图评审；不得以复制 RTL 逻辑作为唯一 oracle。"
+      }
+    },
+    {
+      "id": "CACHE-INT-FORWARD-DATA-WORD",
+      "title": "data forwarding 精确到 set+word",
+      "component": "设计内部 / metadata 与 data forwarding",
+      "description": "触发：同 set 同 word 写；同 set 不同 word；不同 set。检查：只在 set+word 都相等时触发 forwarding，不能仅按 line 匹配。",
+      "metadata": {
+        "verification_layer": "design_internal",
+        "rtl": "example/CacheSignalCFG/Cache.v:187",
+        "module": "CacheStage2",
+        "anchor": "_isForwardData_T_10",
+        "observation": "isForwardData、dataWriteBus setIdx、请求 word",
+        "required_scenarios": [
+          "same_word",
+          "different_word",
+          "different_set"
+        ],
+        "sampling": "DriveStable 读取全部驱动完成后的条件；紧邻 RisingEdge 提交后核对寄存器。Stage1 组合真值表显式标记 settled_combinational。",
+        "closure": "各 case 实際采样的必需场景合并达到目标，相关属性与端到端检查通过；未采样部分不报告覆盖率。",
+        "evidence": "cache_internal_coverage.py；本次运行的 internal-checks.json / internal-functional-coverage.json（本地产物）",
+        "basis": "当前 RTL 提取的验证义务，需对照接口规格/设计意图评审；不得以复制 RTL 逻辑作为唯一 oracle。"
+      }
+    },
+    {
+      "id": "CACHE-INT-FORWARD-DATA-HOLD",
+      "title": "data forwarding 保存和清除",
+      "component": "设计内部 / metadata 与 data forwarding",
+      "description": "触发：受阻请求命中写旁路后写端空闲，再消费或插入空槽。检查：等待期间保存 data/waymask；消费、空槽或 reset 清标志。",
+      "metadata": {
+        "verification_layer": "design_internal",
+        "rtl": "example/CacheSignalCFG/Cache.v:246",
+        "module": "CacheStage2",
+        "anchor": "isForwardDataReg",
+        "observation": "isForwardDataReg、forwardDataReg_*",
+        "required_scenarios": [
+          "hold",
+          "consume",
+          "bubble",
+          "reset"
+        ],
+        "sampling": "DriveStable 读取全部驱动完成后的条件；紧邻 RisingEdge 提交后核对寄存器。Stage1 组合真值表显式标记 settled_combinational。",
+        "closure": "各 case 实際采样的必需场景合并达到目标，相关属性与端到端检查通过；未采样部分不报告覆盖率。",
+        "evidence": "cache_internal_coverage.py；本次运行的 internal-checks.json / internal-functional-coverage.json（本地产物）",
+        "basis": "当前 RTL 提取的验证义务，需对照接口规格/设计意图评审；不得以复制 RTL 逻辑作为唯一 oracle。"
+      }
+    },
+    {
+      "id": "CACHE-INT-FORWARD-DATA-NEWEST",
+      "title": "当前 data 写优先于已保存旁路",
+      "component": "设计内部 / metadata 与 data forwarding",
+      "description": "触发：旧 forwarding 已保存，同 word 又写入新值。检查：Stage2 输出选择最新 data 和对应 waymask，不能跨版本配对。",
+      "metadata": {
+        "verification_layer": "design_internal",
+        "rtl": "example/CacheSignalCFG/Cache.v:218",
+        "module": "CacheStage2",
+        "anchor": "io_out_bits_forwardData_data_data",
+        "observation": "isForwardData、forwardDataReg_*、输出 forwarding",
+        "required_scenarios": [
+          "same_way",
+          "way_changed"
+        ],
+        "sampling": "DriveStable 读取全部驱动完成后的条件；紧邻 RisingEdge 提交后核对寄存器。Stage1 组合真值表显式标记 settled_combinational。",
+        "closure": "各 case 实際采样的必需场景合并达到目标，相关属性与端到端检查通过；未采样部分不报告覆盖率。",
+        "evidence": "cache_internal_coverage.py；本次运行的 internal-checks.json / internal-functional-coverage.json（本地产物）",
+        "basis": "当前 RTL 提取的验证义务，需对照接口规格/设计意图评审；不得以复制 RTL 逻辑作为唯一 oracle。"
+      }
+    },
+    {
+      "id": "CACHE-INT-FORWARD-WAY-QUALIFY",
+      "title": "Stage3 旁路还需匹配 way",
+      "component": "设计内部 / metadata 与 data forwarding",
+      "description": "触发：相同 set+word 的 forwarding 指向选中/未选中 way。检查：只有 forwarding waymask 等于当前 waymask 才使用旁路数据，否则使用所选 SRAM 路。",
+      "metadata": {
+        "verification_layer": "design_internal",
+        "rtl": "example/CacheSignalCFG/Cache.v:524",
+        "module": "CacheStage3",
+        "anchor": "useForwardData",
+        "observation": "useForwardData、两种 waymask、dataRead",
+        "required_scenarios": [
+          "match",
+          "mismatch"
+        ],
+        "sampling": "DriveStable 读取全部驱动完成后的条件；紧邻 RisingEdge 提交后核对寄存器。Stage1 组合真值表显式标记 settled_combinational。",
+        "closure": "各 case 实際采样的必需场景合并达到目标，相关属性与端到端检查通过；未采样部分不报告覆盖率。",
+        "evidence": "cache_internal_coverage.py；本次运行的 internal-checks.json / internal-functional-coverage.json（本地产物）",
+        "basis": "当前 RTL 提取的验证义务，需对照接口规格/设计意图评审；不得以复制 RTL 逻辑作为唯一 oracle。"
+      }
+    },
+    {
+      "id": "CACHE-INT-FORWARD-MASKED-DEPENDENCY",
+      "title": "连续部分写基于最新旁路值合并",
+      "component": "设计内部 / metadata 与 data forwarding",
+      "description": "触发：同 word 连续两个不同 byte mask 写，中间无空闲周期。检查：第二次合并使用第一次的新数据，未覆盖字节不能退回旧数组值。",
+      "metadata": {
+        "verification_layer": "design_internal",
+        "rtl": "example/CacheSignalCFG/Cache.v:552",
+        "module": "CacheStage3",
+        "anchor": "_dataHitWriteBus_x1_T",
+        "observation": "dataRead、wordMask、dataWriteBus、独立逐字节模型",
+        "required_scenarios": [
+          "disjoint_masks",
+          "overlap_masks"
+        ],
+        "sampling": "DriveStable 读取全部驱动完成后的条件；紧邻 RisingEdge 提交后核对寄存器。Stage1 组合真值表显式标记 settled_combinational。",
+        "closure": "各 case 实際采样的必需场景合并达到目标，相关属性与端到端检查通过；未采样部分不报告覆盖率。",
+        "evidence": "cache_internal_coverage.py；本次运行的 internal-checks.json / internal-functional-coverage.json（本地产物）",
+        "basis": "当前 RTL 提取的验证义务，需对照接口规格/设计意图评审；不得以复制 RTL 逻辑作为唯一 oracle。"
+      }
+    },
+    {
+      "id": "CACHE-INT-FSM-IDLE-CLEAN",
+      "title": "空闲 clean miss 进入读请求",
+      "component": "设计内部 / Stage3 主状态机",
+      "description": "触发：state=0，miss，非 MMIO/probe，victim clean，flush=0。检查：下一状态1；不能产生 writeback。",
+      "metadata": {
+        "verification_layer": "design_internal",
+        "rtl": "example/CacheSignalCFG/Cache.v:615",
+        "module": "CacheStage3",
+        "anchor": "_state_T_3",
+        "observation": "state、meta_dirty、mem cmd",
+        "required_scenarios": [
+          "invalid_victim",
+          "valid_clean_victim"
+        ],
+        "sampling": "DriveStable 读取全部驱动完成后的条件；紧邻 RisingEdge 提交后核对寄存器。Stage1 组合真值表显式标记 settled_combinational。",
+        "closure": "各 case 实際采样的必需场景合并达到目标，相关属性与端到端检查通过；未采样部分不报告覆盖率。",
+        "evidence": "cache_internal_coverage.py；本次运行的 internal-checks.json / internal-functional-coverage.json（本地产物）",
+        "basis": "当前 RTL 提取的验证义务，需对照接口规格/设计意图评审；不得以复制 RTL 逻辑作为唯一 oracle。"
+      }
+    },
+    {
+      "id": "CACHE-INT-FSM-IDLE-DIRTY",
+      "title": "空闲 dirty miss 先进入写回",
+      "component": "设计内部 / Stage3 主状态机",
+      "description": "触发：state=0、可缓存 miss、victim dirty。检查：下一状态3；写回完成确认前不得发新 refill。",
+      "metadata": {
+        "verification_layer": "design_internal",
+        "rtl": "example/CacheSignalCFG/Cache.v:615",
+        "module": "CacheStage3",
+        "anchor": "_state_T_3",
+        "observation": "state、writeback/refill 事件顺序",
+        "required_scenarios": [
+          "way0",
+          "way1",
+          "way2",
+          "way3"
+        ],
+        "sampling": "DriveStable 读取全部驱动完成后的条件；紧邻 RisingEdge 提交后核对寄存器。Stage1 组合真值表显式标记 settled_combinational。",
+        "closure": "各 case 实際采样的必需场景合并达到目标，相关属性与端到端检查通过；未采样部分不报告覆盖率。",
+        "evidence": "cache_internal_coverage.py；本次运行的 internal-checks.json / internal-functional-coverage.json（本地产物）",
+        "basis": "当前 RTL 提取的验证义务，需对照接口规格/设计意图评审；不得以复制 RTL 逻辑作为唯一 oracle。"
+      }
+    },
+    {
+      "id": "CACHE-INT-FSM-IDLE-MMIO",
+      "title": "MMIO 优先选择专用状态",
+      "component": "设计内部 / Stage3 主状态机",
+      "description": "触发：state=0 且 MMIO 请求有效。检查：下一状态5，无 cache 分配；不应出现 mmio&&hit。",
+      "metadata": {
+        "verification_layer": "design_internal",
+        "rtl": "example/CacheSignalCFG/Cache.v:616",
+        "module": "CacheStage3",
+        "anchor": "_state_T_4",
+        "observation": "state、mmio、hit、两种下游总线",
+        "required_scenarios": [
+          "read",
+          "write"
+        ],
+        "sampling": "DriveStable 读取全部驱动完成后的条件；紧邻 RisingEdge 提交后核对寄存器。Stage1 组合真值表显式标记 settled_combinational。",
+        "closure": "各 case 实際采样的必需场景合并达到目标，相关属性与端到端检查通过；未采样部分不报告覆盖率。",
+        "evidence": "cache_internal_coverage.py；本次运行的 internal-checks.json / internal-functional-coverage.json（本地产物）",
+        "basis": "当前 RTL 提取的验证义务，需对照接口规格/设计意图评审；不得以复制 RTL 逻辑作为唯一 oracle。"
+      }
+    },
+    {
+      "id": "CACHE-INT-FSM-READ-REQUEST",
+      "title": "读请求接受后进入 refill",
+      "component": "设计内部 / Stage3 主状态机",
+      "description": "触发：state=1，memory ready 延迟后接受。检查：未接受保持1；接受后进入2，readBeatCnt 初始化为请求 word。",
+      "metadata": {
+        "verification_layer": "design_internal",
+        "rtl": "example/CacheSignalCFG/Cache.v:624",
+        "module": "CacheStage3",
+        "anchor": "_GEN_29",
+        "observation": "state、命令接受、readBeatCnt",
+        "required_scenarios": [
+          "stalled",
+          "accepted"
+        ],
+        "sampling": "DriveStable 读取全部驱动完成后的条件；紧邻 RisingEdge 提交后核对寄存器。Stage1 组合真值表显式标记 settled_combinational。",
+        "closure": "各 case 实際采样的必需场景合并达到目标，相关属性与端到端检查通过；未采样部分不报告覆盖率。",
+        "evidence": "cache_internal_coverage.py；本次运行的 internal-checks.json / internal-functional-coverage.json（本地产物）",
+        "basis": "当前 RTL 提取的验证义务，需对照接口规格/设计意图评审；不得以复制 RTL 逻辑作为唯一 oracle。"
+      }
+    },
+    {
+      "id": "CACHE-INT-FSM-READ-END",
+      "title": "refill 仅接受末拍才完成",
+      "component": "设计内部 / Stage3 主状态机",
+      "description": "触发：state=2，普通/末拍 response valid 和空拍交错。检查：普通拍/空拍保持2；接受 cmd=6 后进入7，不能只看总线上的末拍编码。",
+      "metadata": {
+        "verification_layer": "design_internal",
+        "rtl": "example/CacheSignalCFG/Cache.v:627",
+        "module": "CacheStage3",
+        "anchor": "_T_57",
+        "observation": "state、memory response 接受、cmd",
+        "required_scenarios": [
+          "middle",
+          "gap",
+          "last_valid",
+          "last_without_valid"
+        ],
+        "sampling": "DriveStable 读取全部驱动完成后的条件；紧邻 RisingEdge 提交后核对寄存器。Stage1 组合真值表显式标记 settled_combinational。",
+        "closure": "各 case 实際采样的必需场景合并达到目标，相关属性与端到端检查通过；未采样部分不报告覆盖率。",
+        "evidence": "cache_internal_coverage.py；本次运行的 internal-checks.json / internal-functional-coverage.json（本地产物）",
+        "basis": "当前 RTL 提取的验证义务，需对照接口规格/设计意图评审；不得以复制 RTL 逻辑作为唯一 oracle。"
+      }
+    },
+    {
+      "id": "CACHE-INT-FSM-WB-END",
+      "title": "写回最后接受拍进入等待确认",
+      "component": "设计内部 / Stage3 主状态机",
+      "description": "触发：state=3，末拍命令受阻再接受。检查：阻塞保持3，只有末拍 cmd=7 接受后进入4。",
+      "metadata": {
+        "verification_layer": "design_internal",
+        "rtl": "example/CacheSignalCFG/Cache.v:635",
+        "module": "CacheStage3",
+        "anchor": "_T_60",
+        "observation": "state、writeBeatCnt、memory command 接受",
+        "required_scenarios": [
+          "last_stalled",
+          "last_accepted"
+        ],
+        "sampling": "DriveStable 读取全部驱动完成后的条件；紧邻 RisingEdge 提交后核对寄存器。Stage1 组合真值表显式标记 settled_combinational。",
+        "closure": "各 case 实際采样的必需场景合并达到目标，相关属性与端到端检查通过；未采样部分不报告覆盖率。",
+        "evidence": "cache_internal_coverage.py；本次运行的 internal-checks.json / internal-functional-coverage.json（本地产物）",
+        "basis": "当前 RTL 提取的验证义务，需对照接口规格/设计意图评审；不得以复制 RTL 逻辑作为唯一 oracle。"
+      }
+    },
+    {
+      "id": "CACHE-INT-FSM-WB-ACK",
+      "title": "收到写回确认后才启动 refill",
+      "component": "设计内部 / Stage3 主状态机",
+      "description": "触发：state=4，无响应若干拍后确认到达。检查：无确认保持4，确认接受后进入1；请求与 victim 数据不被覆盖。",
+      "metadata": {
+        "verification_layer": "design_internal",
+        "rtl": "example/CacheSignalCFG/Cache.v:637",
+        "module": "CacheStage3",
+        "anchor": "_GEN_39",
+        "observation": "state、memory response、后续 refill",
+        "required_scenarios": [
+          "ack_delayed",
+          "ack_received"
+        ],
+        "sampling": "DriveStable 读取全部驱动完成后的条件；紧邻 RisingEdge 提交后核对寄存器。Stage1 组合真值表显式标记 settled_combinational。",
+        "closure": "各 case 实際采样的必需场景合并达到目标，相关属性与端到端检查通过；未采样部分不报告覆盖率。",
+        "evidence": "cache_internal_coverage.py；本次运行的 internal-checks.json / internal-functional-coverage.json（本地产物）",
+        "basis": "当前 RTL 提取的验证义务，需对照接口规格/设计意图评审；不得以复制 RTL 逻辑作为唯一 oracle。"
+      }
+    },
+    {
+      "id": "CACHE-INT-FSM-MMIO-REQUEST",
+      "title": "MMIO 命令接受转等待响应",
+      "component": "设计内部 / Stage3 主状态机",
+      "description": "触发：state=5，MMIO ready 为低再为高。检查：未接受保持5，接受后进入6，命令只计一次。",
+      "metadata": {
+        "verification_layer": "design_internal",
+        "rtl": "example/CacheSignalCFG/Cache.v:776",
+        "module": "CacheStage3",
+        "anchor": "4'h5 == state",
+        "observation": "state、MMIO 请求接受",
+        "required_scenarios": [
+          "stalled",
+          "accepted"
+        ],
+        "sampling": "DriveStable 读取全部驱动完成后的条件；紧邻 RisingEdge 提交后核对寄存器。Stage1 组合真值表显式标记 settled_combinational。",
+        "closure": "各 case 实際采样的必需场景合并达到目标，相关属性与端到端检查通过；未采样部分不报告覆盖率。",
+        "evidence": "cache_internal_coverage.py；本次运行的 internal-checks.json / internal-functional-coverage.json（本地产物）",
+        "basis": "当前 RTL 提取的验证义务，需对照接口规格/设计意图评审；不得以复制 RTL 逻辑作为唯一 oracle。"
+      }
+    },
+    {
+      "id": "CACHE-INT-FSM-MMIO-RESPONSE",
+      "title": "MMIO 响应接受转完成",
+      "component": "设计内部 / Stage3 主状态机",
+      "description": "触发：state=6，响应 valid 延迟。检查：无响应保持6，接受后进入7并保留正确返回值。",
+      "metadata": {
+        "verification_layer": "design_internal",
+        "rtl": "example/CacheSignalCFG/Cache.v:620",
+        "module": "CacheStage3",
+        "anchor": "_GEN_26",
+        "observation": "state、MMIO response、inRdataRegDemand",
+        "required_scenarios": [
+          "gap",
+          "valid"
+        ],
+        "sampling": "DriveStable 读取全部驱动完成后的条件；紧邻 RisingEdge 提交后核对寄存器。Stage1 组合真值表显式标记 settled_combinational。",
+        "closure": "各 case 实際采样的必需场景合并达到目标，相关属性与端到端检查通过；未采样部分不报告覆盖率。",
+        "evidence": "cache_internal_coverage.py；本次运行的 internal-checks.json / internal-functional-coverage.json（本地产物）",
+        "basis": "当前 RTL 提取的验证义务，需对照接口规格/设计意图评审；不得以复制 RTL 逻辑作为唯一 oracle。"
+      }
+    },
+    {
+      "id": "CACHE-INT-FSM-COMPLETE",
+      "title": "完成态退出的两种合法依据",
+      "component": "设计内部 / Stage3 主状态机",
+      "description": "触发：state=7；响应尚未接受或早期响应已经接受。检查：普通响应未接受则保持7；最终接受或 alreadyOutFire=1 时返回0，不重复交付。",
+      "metadata": {
+        "verification_layer": "design_internal",
+        "rtl": "example/CacheSignalCFG/Cache.v:638",
+        "module": "CacheStage3",
+        "anchor": "_GEN_40",
+        "observation": "state、alreadyOutFire、CPU 接受事件",
+        "required_scenarios": [
+          "output_stalled",
+          "normal_accept",
+          "already_returned"
+        ],
+        "sampling": "DriveStable 读取全部驱动完成后的条件；紧邻 RisingEdge 提交后核对寄存器。Stage1 组合真值表显式标记 settled_combinational。",
+        "closure": "各 case 实際采样的必需场景合并达到目标，相关属性与端到端检查通过；未采样部分不报告覆盖率。",
+        "evidence": "cache_internal_coverage.py；本次运行的 internal-checks.json / internal-functional-coverage.json（本地产物）",
+        "basis": "当前 RTL 提取的验证义务，需对照接口规格/设计意图评审；不得以复制 RTL 逻辑作为唯一 oracle。"
+      }
+    },
+    {
+      "id": "CACHE-INT-FSM-PROBE",
+      "title": "probe header 决定是否进入 release",
+      "component": "设计内部 / Stage3 主状态机",
+      "description": "触发：state=0 的 probe header 分别 hit/miss，且有背压。检查：header 未接受保持0；miss 接受后仍0；hit 接受后进8。",
+      "metadata": {
+        "verification_layer": "design_internal",
+        "rtl": "example/CacheSignalCFG/Cache.v:611",
+        "module": "CacheStage3",
+        "anchor": "_state_T",
+        "observation": "state、probe/hit、coh response 接受",
+        "required_scenarios": [
+          "miss",
+          "hit",
+          "header_stalled"
+        ],
+        "sampling": "DriveStable 读取全部驱动完成后的条件；紧邻 RisingEdge 提交后核对寄存器。Stage1 组合真值表显式标记 settled_combinational。",
+        "closure": "各 case 实際采样的必需场景合并达到目标，相关属性与端到端检查通过；未采样部分不报告覆盖率。",
+        "evidence": "cache_internal_coverage.py；本次运行的 internal-checks.json / internal-functional-coverage.json（本地产物）",
+        "basis": "当前 RTL 提取的验证义务，需对照接口规格/设计意图评审；不得以复制 RTL 逻辑作为唯一 oracle。"
+      }
+    },
+    {
+      "id": "CACHE-INT-FSM-RELEASE-END",
+      "title": "release 末拍接受后退出",
+      "component": "设计内部 / Stage3 主状态机",
+      "description": "触发：state=8，coherence release 的中间/末拍接受及阻塞。检查：非末拍/未接受保持8；只有第八数据接受后回0。",
+      "metadata": {
+        "verification_layer": "design_internal",
+        "rtl": "example/CacheSignalCFG/Cache.v:623",
+        "module": "CacheStage3",
+        "anchor": "_GEN_28",
+        "observation": "state、releaseLast_c_value、releaseLast、接受事件",
+        "required_scenarios": [
+          "middle",
+          "last_stalled",
+          "last_accepted"
+        ],
+        "sampling": "DriveStable 读取全部驱动完成后的条件；紧邻 RisingEdge 提交后核对寄存器。Stage1 组合真值表显式标记 settled_combinational。",
+        "closure": "各 case 实際采样的必需场景合并达到目标，相关属性与端到端检查通过；未采样部分不报告覆盖率。",
+        "evidence": "cache_internal_coverage.py；本次运行的 internal-checks.json / internal-functional-coverage.json（本地产物）",
+        "basis": "当前 RTL 提取的验证义务，需对照接口规格/设计意图评审；不得以复制 RTL 逻辑作为唯一 oracle。"
+      }
+    },
+    {
+      "id": "CACHE-INT-ARRAY-META-SWEEP",
+      "title": "metadata 全 set 初始化扫描",
+      "component": "设计内部 / SRAM 初始化、端口与读时序",
+      "description": "触发：reset 释放后等待初始化，覆盖128个set。检查：resetSet 逐项扫描0..127、四路 tag/valid/dirty 清零，最后才退出 resetState。",
+      "metadata": {
+        "verification_layer": "design_internal",
+        "rtl": "example/CacheSignalCFG/Cache.v:1125",
+        "module": "SRAMTemplate",
+        "anchor": "resetState",
+        "observation": "metaArray.ram.resetState/resetSet、四路写掩码和地址",
+        "required_scenarios": [
+          "set0",
+          "set1",
+          "set2",
+          "set3",
+          "set4",
+          "set5",
+          "set6",
+          "set7",
+          "set8",
+          "set9",
+          "set10",
+          "set11",
+          "set12",
+          "set13",
+          "set14",
+          "set15",
+          "set16",
+          "set17",
+          "set18",
+          "set19",
+          "set20",
+          "set21",
+          "set22",
+          "set23",
+          "set24",
+          "set25",
+          "set26",
+          "set27",
+          "set28",
+          "set29",
+          "set30",
+          "set31",
+          "set32",
+          "set33",
+          "set34",
+          "set35",
+          "set36",
+          "set37",
+          "set38",
+          "set39",
+          "set40",
+          "set41",
+          "set42",
+          "set43",
+          "set44",
+          "set45",
+          "set46",
+          "set47",
+          "set48",
+          "set49",
+          "set50",
+          "set51",
+          "set52",
+          "set53",
+          "set54",
+          "set55",
+          "set56",
+          "set57",
+          "set58",
+          "set59",
+          "set60",
+          "set61",
+          "set62",
+          "set63",
+          "set64",
+          "set65",
+          "set66",
+          "set67",
+          "set68",
+          "set69",
+          "set70",
+          "set71",
+          "set72",
+          "set73",
+          "set74",
+          "set75",
+          "set76",
+          "set77",
+          "set78",
+          "set79",
+          "set80",
+          "set81",
+          "set82",
+          "set83",
+          "set84",
+          "set85",
+          "set86",
+          "set87",
+          "set88",
+          "set89",
+          "set90",
+          "set91",
+          "set92",
+          "set93",
+          "set94",
+          "set95",
+          "set96",
+          "set97",
+          "set98",
+          "set99",
+          "set100",
+          "set101",
+          "set102",
+          "set103",
+          "set104",
+          "set105",
+          "set106",
+          "set107",
+          "set108",
+          "set109",
+          "set110",
+          "set111",
+          "set112",
+          "set113",
+          "set114",
+          "set115",
+          "set116",
+          "set117",
+          "set118",
+          "set119",
+          "set120",
+          "set121",
+          "set122",
+          "set123",
+          "set124",
+          "set125",
+          "set126",
+          "set127",
+          "all_ways"
+        ],
+        "sampling": "DriveStable 读取全部驱动完成后的条件；紧邻 RisingEdge 提交后核对寄存器。Stage1 组合真值表显式标记 settled_combinational。",
+        "closure": "各 case 实際采样的必需场景合并达到目标，相关属性与端到端检查通过；未采样部分不报告覆盖率。",
+        "evidence": "cache_internal_coverage.py；本次运行的 internal-checks.json / internal-functional-coverage.json（本地产物）",
+        "basis": "当前 RTL 提取的验证义务，需对照接口规格/设计意图评审；不得以复制 RTL 逻辑作为唯一 oracle。"
+      }
+    },
+    {
+      "id": "CACHE-INT-ARRAY-RESET-BLOCK",
+      "title": "初始化期间禁止 metadata 读接受",
+      "component": "设计内部 / SRAM 初始化、端口与读时序",
+      "description": "触发：初始化扫描期间 CPU 连续请求。检查：metadata ready 为低，流水不得接受未初始化查找；扫描完成后放行。",
+      "metadata": {
+        "verification_layer": "design_internal",
+        "rtl": "example/CacheSignalCFG/Cache.v:1167",
+        "module": "SRAMTemplate",
+        "anchor": "io_r_req_ready",
+        "observation": "resetState、SRAM ready、CPU 接受",
+        "required_scenarios": [
+          "during_sweep",
+          "first_ready"
+        ],
+        "sampling": "DriveStable 读取全部驱动完成后的条件；紧邻 RisingEdge 提交后核对寄存器。Stage1 组合真值表显式标记 settled_combinational。",
+        "closure": "各 case 实際采样的必需场景合并达到目标，相关属性与端到端检查通过；未采样部分不报告覆盖率。",
+        "evidence": "cache_internal_coverage.py；本次运行的 internal-checks.json / internal-functional-coverage.json（本地产物）",
+        "basis": "当前 RTL 提取的验证义务，需对照接口规格/设计意图评审；不得以复制 RTL 逻辑作为唯一 oracle。"
+      }
+    },
+    {
+      "id": "CACHE-INT-ARRAY-WAY-WRITE",
+      "title": "metadata 写入只影响选中 way",
+      "component": "设计内部 / SRAM 初始化、端口与读时序",
+      "description": "触发：正常 metadata 写 one-hot waymask。检查：目标 set/way 更新为 tag、valid=1、dirty；其他way/set保留。",
+      "metadata": {
+        "verification_layer": "design_internal",
+        "rtl": "example/CacheSignalCFG/Cache.v:1144",
+        "module": "SRAMTemplate",
+        "anchor": "array_0_MPORT_mask",
+        "observation": "数组写地址、waymask、读回 metadata",
+        "required_scenarios": [
+          "way0",
+          "way1",
+          "way2",
+          "way3"
+        ],
+        "sampling": "DriveStable 读取全部驱动完成后的条件；紧邻 RisingEdge 提交后核对寄存器。Stage1 组合真值表显式标记 settled_combinational。",
+        "closure": "各 case 实際采样的必需场景合并达到目标，相关属性与端到端检查通过；未采样部分不报告覆盖率。",
+        "evidence": "cache_internal_coverage.py；本次运行的 internal-checks.json / internal-functional-coverage.json（本地产物）",
+        "basis": "当前 RTL 提取的验证义务，需对照接口规格/设计意图评审；不得以复制 RTL 逻辑作为唯一 oracle。"
+      }
+    },
+    {
+      "id": "CACHE-INT-ARRAY-WRITE-PRIORITY",
+      "title": "单端口 metadata 写优先于读",
+      "component": "设计内部 / SRAM 初始化、端口与读时序",
+      "description": "触发：同周期有 metadata 写和读请求。检查：读 ready 为低且读地址管线不装载；下一次实际读返回正确内容。",
+      "metadata": {
+        "verification_layer": "design_internal",
+        "rtl": "example/CacheSignalCFG/Cache.v:1131",
+        "module": "SRAMTemplate",
+        "anchor": "wen",
+        "observation": "wen、io_r_req_ready、读地址使能",
+        "required_scenarios": [
+          "normal_write",
+          "reset_write"
+        ],
+        "sampling": "DriveStable 读取全部驱动完成后的条件；紧邻 RisingEdge 提交后核对寄存器。Stage1 组合真值表显式标记 settled_combinational。",
+        "closure": "各 case 实際采样的必需场景合并达到目标，相关属性与端到端检查通过；未采样部分不报告覆盖率。",
+        "evidence": "cache_internal_coverage.py；本次运行的 internal-checks.json / internal-functional-coverage.json（本地产物）",
+        "basis": "当前 RTL 提取的验证义务，需对照接口规格/设计意图评审；不得以复制 RTL 逻辑作为唯一 oracle。"
+      }
+    },
+    {
+      "id": "CACHE-INT-ARRAY-DATA-PORT",
+      "title": "Stage1 与 Stage3 的 data SRAM 读仲裁",
+      "component": "设计内部 / SRAM 初始化、端口与读时序",
+      "description": "触发：Stage1 读和 Stage3 writeback/release 读同时有效。检查：当前 RTL 为端口0（Stage1）优先；Stage3 未授予时不推进读取子状态。",
+      "metadata": {
+        "verification_layer": "design_internal",
+        "rtl": "example/CacheSignalCFG/Cache.v:1795",
+        "module": "Arbiter_3",
+        "anchor": "grant_1",
+        "observation": "readArb grants、两路 ready、s3.state2",
+        "required_scenarios": [
+          "port0_only",
+          "port1_only",
+          "both"
+        ],
+        "sampling": "DriveStable 读取全部驱动完成后的条件；紧邻 RisingEdge 提交后核对寄存器。Stage1 组合真值表显式标记 settled_combinational。",
+        "closure": "各 case 实際采样的必需场景合并达到目标，相关属性与端到端检查通过；未采样部分不报告覆盖率。",
+        "evidence": "cache_internal_coverage.py；本次运行的 internal-checks.json / internal-functional-coverage.json（本地产物）",
+        "basis": "当前 RTL 提取的验证义务，需对照接口规格/设计意图评审；不得以复制 RTL 逻辑作为唯一 oracle。"
+      }
+    },
+    {
+      "id": "CACHE-INT-ARRAY-READ-RESPONSE",
+      "title": "共享 SRAM 返回值归属及保持",
+      "component": "设计内部 / SRAM 初始化、端口与读时序",
+      "description": "触发：两端口相邻周期轮流读取不同地址，另插空拍。检查：每个端口只在自身上次获准读取后更新返回副本，不能拿到另一端口数据。",
+      "metadata": {
+        "verification_layer": "design_internal",
+        "rtl": "example/CacheSignalCFG/Cache.v:1856",
+        "module": "SRAMTemplateWithArbiter_1",
+        "anchor": "reg  REG",
+        "observation": "SRAMTemplateWithArbiter_1 REG/REG_1、两组 r_* 数据",
+        "required_scenarios": [
+          "0_then_1",
+          "1_then_0",
+          "idle_hold"
+        ],
+        "sampling": "DriveStable 读取全部驱动完成后的条件；紧邻 RisingEdge 提交后核对寄存器。Stage1 组合真值表显式标记 settled_combinational。",
+        "closure": "各 case 实際采样的必需场景合并达到目标，相关属性与端到端检查通过；未采样部分不报告覆盖率。",
+        "evidence": "cache_internal_coverage.py；本次运行的 internal-checks.json / internal-functional-coverage.json（本地产物）",
+        "basis": "当前 RTL 提取的验证义务，需对照接口规格/设计意图评审；不得以复制 RTL 逻辑作为唯一 oracle。"
+      }
+    },
+    {
+      "id": "CACHE-INT-FORWARD-READ-ISSUE",
+      "title": "写回/release 发起 SRAM 读取",
+      "component": "设计内部 / Stage3 读取子状态",
+      "description": "触发：主状态3或8且 state2=0，data 端口延迟授予。检查：读未接受保持0；接受后state2=1，地址选择相应读/写计数器。",
+      "metadata": {
+        "verification_layer": "design_internal",
+        "rtl": "example/CacheSignalCFG/Cache.v:708",
+        "module": "CacheStage3",
+        "anchor": "io_dataReadBus_req_valid",
+        "observation": "state2、读请求接受、data read 地址",
+        "required_scenarios": [
+          "writeback",
+          "release",
+          "arbitration_stall"
+        ],
+        "sampling": "DriveStable 读取全部驱动完成后的条件；紧邻 RisingEdge 提交后核对寄存器。Stage1 组合真值表显式标记 settled_combinational。",
+        "closure": "各 case 实際采样的必需场景合并达到目标，相关属性与端到端检查通过；未采样部分不报告覆盖率。",
+        "evidence": "cache_internal_coverage.py；本次运行的 internal-checks.json / internal-functional-coverage.json（本地产物）",
+        "basis": "当前 RTL 提取的验证义务，需对照接口规格/设计意图评审；不得以复制 RTL 逻辑作为唯一 oracle。"
+      }
+    },
+    {
+      "id": "CACHE-INT-FORWARD-READ-CAPTURE",
+      "title": "同步 SRAM 数据装载",
+      "component": "设计内部 / Stage3 读取子状态",
+      "description": "触发：state2=1。检查：四路 dataWay 在该阶段装载，下一拍state2=2；不能提前发送未返回的数据。",
+      "metadata": {
+        "verification_layer": "design_internal",
+        "rtl": "example/CacheSignalCFG/Cache.v:822",
+        "module": "CacheStage3",
+        "anchor": "2'h1 == state2",
+        "observation": "state2、dataWay_0..3、SRAM response",
+        "required_scenarios": [
+          "writeback",
+          "release"
+        ],
+        "sampling": "DriveStable 读取全部驱动完成后的条件；紧邻 RisingEdge 提交后核对寄存器。Stage1 组合真值表显式标记 settled_combinational。",
+        "closure": "各 case 实際采样的必需场景合并达到目标，相关属性与端到端检查通过；未采样部分不报告覆盖率。",
+        "evidence": "cache_internal_coverage.py；本次运行的 internal-checks.json / internal-functional-coverage.json（本地产物）",
+        "basis": "当前 RTL 提取的验证义务，需对照接口规格/设计意图评审；不得以复制 RTL 逻辑作为唯一 oracle。"
+      }
+    },
+    {
+      "id": "CACHE-INT-FORWARD-READ-HOLD",
+      "title": "已取数据受阻时保持",
+      "component": "设计内部 / Stage3 读取子状态",
+      "description": "触发：state2=2，选定输出通道未接受。检查：state2 与 dataWay 保持，不发新的 SRAM 读、不跳过当前 word。",
+      "metadata": {
+        "verification_layer": "design_internal",
+        "rtl": "example/CacheSignalCFG/Cache.v:824",
+        "module": "CacheStage3",
+        "anchor": "2'h2 == state2",
+        "observation": "state2、dataWay、mem/coh/CPU burst 接受",
+        "required_scenarios": [
+          "memory_stall",
+          "coherence_stall"
+        ],
+        "sampling": "DriveStable 读取全部驱动完成后的条件；紧邻 RisingEdge 提交后核对寄存器。Stage1 组合真值表显式标记 settled_combinational。",
+        "closure": "各 case 实際采样的必需场景合并达到目标，相关属性与端到端检查通过；未采样部分不报告覆盖率。",
+        "evidence": "cache_internal_coverage.py；本次运行的 internal-checks.json / internal-functional-coverage.json（本地产物）",
+        "basis": "当前 RTL 提取的验证义务，需对照接口规格/设计意图评审；不得以复制 RTL 逻辑作为唯一 oracle。"
+      }
+    },
+    {
+      "id": "CACHE-INT-FORWARD-READ-NEXT",
+      "title": "数据接受后准备下一 word",
+      "component": "设计内部 / Stage3 读取子状态",
+      "description": "触发：state2=2，当前 memory/coherence/CPU burst 数据接受。检查：下一拍 state2=0，再取下一word；每次接受只推动一次。",
+      "metadata": {
+        "verification_layer": "design_internal",
+        "rtl": "example/CacheSignalCFG/Cache.v:581",
+        "module": "CacheStage3",
+        "anchor": "_GEN_8",
+        "observation": "state2、数据输出接受、下一读请求",
+        "required_scenarios": [
+          "memory",
+          "coherence",
+          "CPU_burst"
+        ],
+        "sampling": "DriveStable 读取全部驱动完成后的条件；紧邻 RisingEdge 提交后核对寄存器。Stage1 组合真值表显式标记 settled_combinational。",
+        "closure": "各 case 实際采样的必需场景合并达到目标，相关属性与端到端检查通过；未采样部分不报告覆盖率。",
+        "evidence": "cache_internal_coverage.py；本次运行的 internal-checks.json / internal-functional-coverage.json（本地产物）",
+        "basis": "当前 RTL 提取的验证义务，需对照接口规格/设计意图评审；不得以复制 RTL 逻辑作为唯一 oracle。"
+      }
+    },
+    {
+      "id": "CACHE-INT-REFILL-COUNT-INIT",
+      "title": "refill 计数从 demand word 开始",
+      "component": "设计内部 / refill 计数、数据与 metadata",
+      "description": "触发：读请求接受，start_word=0..7。检查：readBeatCnt 初始化为请求word；第一拍写正确word。",
+      "metadata": {
+        "verification_layer": "design_internal",
+        "rtl": "example/CacheSignalCFG/Cache.v:625",
+        "module": "CacheStage3",
+        "anchor": "_GEN_30",
+        "observation": "readBeatCnt、refill写地址",
+        "required_scenarios": [
+          "start0",
+          "start1",
+          "start2",
+          "start3",
+          "start4",
+          "start5",
+          "start6",
+          "start7"
+        ],
+        "sampling": "DriveStable 读取全部驱动完成后的条件；紧邻 RisingEdge 提交后核对寄存器。Stage1 组合真值表显式标记 settled_combinational。",
+        "closure": "各 case 实際采样的必需场景合并达到目标，相关属性与端到端检查通过；未采样部分不报告覆盖率。",
+        "evidence": "cache_internal_coverage.py；本次运行的 internal-checks.json / internal-functional-coverage.json（本地产物）",
+        "basis": "当前 RTL 提取的验证义务，需对照接口规格/设计意图评审；不得以复制 RTL 逻辑作为唯一 oracle。"
+      }
+    },
+    {
+      "id": "CACHE-INT-REFILL-COUNT-STEP",
+      "title": "refill 计数只随接受递增",
+      "component": "设计内部 / refill 计数、数据与 metadata",
+      "description": "触发：响应中间插空拍，初始计数含7。检查：仅 response 接受递增，7→0按3位回绕；空拍保持。",
+      "metadata": {
+        "verification_layer": "design_internal",
+        "rtl": "example/CacheSignalCFG/Cache.v:630",
+        "module": "CacheStage3",
+        "anchor": "_GEN_34",
+        "observation": "readBeatCnt 前后值、memory response valid",
+        "required_scenarios": [
+          "increment",
+          "wrap",
+          "gap"
+        ],
+        "sampling": "DriveStable 读取全部驱动完成后的条件；紧邻 RisingEdge 提交后核对寄存器。Stage1 组合真值表显式标记 settled_combinational。",
+        "closure": "各 case 实際采样的必需场景合并达到目标，相关属性与端到端检查通过；未采样部分不报告覆盖率。",
+        "evidence": "cache_internal_coverage.py；本次运行的 internal-checks.json / internal-functional-coverage.json（本地产物）",
+        "basis": "当前 RTL 提取的验证义务，需对照接口规格/设计意图评审；不得以复制 RTL 逻辑作为唯一 oracle。"
+      }
+    },
+    {
+      "id": "CACHE-INT-REFILL-DATA-WRITE",
+      "title": "每个已接受 refill word 恰好写一次",
+      "component": "设计内部 / refill 计数、数据与 metadata",
+      "description": "触发：state=2，响应八拍且存在间隔。检查：每拍写当前set+readBeatCnt和选中way；未接受周期无写入。",
+      "metadata": {
+        "verification_layer": "design_internal",
+        "rtl": "example/CacheSignalCFG/Cache.v:662",
+        "module": "CacheStage3",
+        "anchor": "dataRefillWriteBus_x9",
+        "observation": "dataRefillWriteBus、dataArray write地址/waymask",
+        "required_scenarios": [
+          "beat0",
+          "beat1",
+          "beat2",
+          "beat3",
+          "beat4",
+          "beat5",
+          "beat6",
+          "beat7",
+          "gap_no_write"
+        ],
+        "sampling": "DriveStable 读取全部驱动完成后的条件；紧邻 RisingEdge 提交后核对寄存器。Stage1 组合真值表显式标记 settled_combinational。",
+        "closure": "各 case 实際采样的必需场景合并达到目标，相关属性与端到端检查通过；未采样部分不报告覆盖率。",
+        "evidence": "cache_internal_coverage.py；本次运行的 internal-checks.json / internal-functional-coverage.json（本地产物）",
+        "basis": "当前 RTL 提取的验证义务，需对照接口规格/设计意图评审；不得以复制 RTL 逻辑作为唯一 oracle。"
+      }
+    },
+    {
+      "id": "CACHE-INT-REFILL-WRITE-MERGE",
+      "title": "write allocate 只在首拍合并写数据",
+      "component": "设计内部 / refill 计数、数据与 metadata",
+      "description": "触发：partial write miss，从非零word开始refill。检查：首响应按byte mask合并；其他七拍原样写入，不能对每拍重复合并。",
+      "metadata": {
+        "verification_layer": "design_internal",
+        "rtl": "example/CacheSignalCFG/Cache.v:658",
+        "module": "CacheStage3",
+        "anchor": "_dataRefill_T",
+        "observation": "readingFirst、wordMask、dataRefill、独立line模型",
+        "required_scenarios": [
+          "partial_mask",
+          "zero_mask",
+          "first_vs_later"
+        ],
+        "sampling": "DriveStable 读取全部驱动完成后的条件；紧邻 RisingEdge 提交后核对寄存器。Stage1 组合真值表显式标记 settled_combinational。",
+        "closure": "各 case 实際采样的必需场景合并达到目标，相关属性与端到端检查通过；未采样部分不报告覆盖率。",
+        "evidence": "cache_internal_coverage.py；本次运行的 internal-checks.json / internal-functional-coverage.json（本地产物）",
+        "basis": "当前 RTL 提取的验证义务，需对照接口规格/设计意图评审；不得以复制 RTL 逻辑作为唯一 oracle。"
+      }
+    },
+    {
+      "id": "CACHE-INT-REFILL-META-LAST",
+      "title": "仅末响应提交新 tag/valid",
+      "component": "设计内部 / refill 计数、数据与 metadata",
+      "description": "触发：观察完整refill以及末拍前空隙。检查：只有末拍接受才写tag/valid，避免未填完整的line提前可命中。",
+      "metadata": {
+        "verification_layer": "design_internal",
+        "rtl": "example/CacheSignalCFG/Cache.v:663",
+        "module": "CacheStage3",
+        "anchor": "metaRefillWriteBus_req_valid",
+        "observation": "metadata写事件、refill进度、同set查找",
+        "required_scenarios": [
+          "before_last",
+          "last",
+          "last_gap"
+        ],
+        "sampling": "DriveStable 读取全部驱动完成后的条件；紧邻 RisingEdge 提交后核对寄存器。Stage1 组合真值表显式标记 settled_combinational。",
+        "closure": "各 case 实際采样的必需场景合并达到目标，相关属性与端到端检查通过；未采样部分不报告覆盖率。",
+        "evidence": "cache_internal_coverage.py；本次运行的 internal-checks.json / internal-functional-coverage.json（本地产物）",
+        "basis": "当前 RTL 提取的验证义务，需对照接口规格/设计意图评审；不得以复制 RTL 逻辑作为唯一 oracle。"
+      }
+    },
+    {
+      "id": "CACHE-INT-REFILL-META-DIRTY",
+      "title": "refill dirty 根据请求类型初始化",
+      "component": "设计内部 / refill 计数、数据与 metadata",
+      "description": "触发：read miss 与 write miss 依次完成。检查：read分配clean，write分配dirty，tag来自请求而不是victim。",
+      "metadata": {
+        "verification_layer": "design_internal",
+        "rtl": "example/CacheSignalCFG/Cache.v:742",
+        "module": "CacheStage3",
+        "anchor": "metaWriteArb_io_in_1_bits_data_dirty",
+        "observation": "metaRefill写data_tag/dirty、后续lookup",
+        "required_scenarios": [
+          "read_allocate",
+          "write_allocate"
+        ],
+        "sampling": "DriveStable 读取全部驱动完成后的条件；紧邻 RisingEdge 提交后核对寄存器。Stage1 组合真值表显式标记 settled_combinational。",
+        "closure": "各 case 实際采样的必需场景合并达到目标，相关属性与端到端检查通过；未采样部分不报告覆盖率。",
+        "evidence": "cache_internal_coverage.py；本次运行的 internal-checks.json / internal-functional-coverage.json（本地产物）",
+        "basis": "当前 RTL 提取的验证义务，需对照接口规格/设计意图评审；不得以复制 RTL 逻辑作为唯一 oracle。"
+      }
+    },
+    {
+      "id": "CACHE-INT-REFILL-FIRST-FLAG",
+      "title": "afterFirstRead 置位与清除",
+      "component": "设计内部 / refill 计数、数据与 metadata",
+      "description": "触发：首refill响应、后续拍、返回IDLE、下一笔miss。检查：只在首响应接受后置位，后续保持；新事务在IDLE清零。",
+      "metadata": {
+        "verification_layer": "design_internal",
+        "rtl": "example/CacheSignalCFG/Cache.v:840",
+        "module": "CacheStage3",
+        "anchor": "afterFirstRead",
+        "observation": "afterFirstRead、readingFirst、state",
+        "required_scenarios": [
+          "first",
+          "later",
+          "next_transaction"
+        ],
+        "sampling": "DriveStable 读取全部驱动完成后的条件；紧邻 RisingEdge 提交后核对寄存器。Stage1 组合真值表显式标记 settled_combinational。",
+        "closure": "各 case 实際采样的必需场景合并达到目标，相关属性与端到端检查通过；未采样部分不报告覆盖率。",
+        "evidence": "cache_internal_coverage.py；本次运行的 internal-checks.json / internal-functional-coverage.json（本地产物）",
+        "basis": "当前 RTL 提取的验证义务，需对照接口规格/设计意图评审；不得以复制 RTL 逻辑作为唯一 oracle。"
+      }
+    },
+    {
+      "id": "CACHE-INT-EARLY-DEMAND-CAPTURE",
+      "title": "需求字缓存不被后续refill覆盖",
+      "component": "设计内部 / 提前响应与完成隔离",
+      "description": "触发：read miss各拍数据不同，首拍为demand word。检查：inRdataRegDemand只由首个refill数据装载，后续拍不覆盖；最终响应等于独立期望。",
+      "metadata": {
+        "verification_layer": "design_internal",
+        "rtl": "example/CacheSignalCFG/Cache.v:855",
+        "module": "CacheStage3",
+        "anchor": "_inRdataRegDemand_T_2",
+        "observation": "readingFirst、inRdataRegDemand、所有响应数据",
+        "required_scenarios": [
+          "first",
+          "later_different_data"
+        ],
+        "sampling": "DriveStable 读取全部驱动完成后的条件；紧邻 RisingEdge 提交后核对寄存器。Stage1 组合真值表显式标记 settled_combinational。",
+        "closure": "各 case 实際采样的必需场景合并达到目标，相关属性与端到端检查通过；未采样部分不报告覆盖率。",
+        "evidence": "cache_internal_coverage.py；本次运行的 internal-checks.json / internal-functional-coverage.json（本地产物）",
+        "basis": "当前 RTL 提取的验证义务，需对照接口规格/设计意图评审；不得以复制 RTL 逻辑作为唯一 oracle。"
+      }
+    },
+    {
+      "id": "CACHE-INT-EARLY-EARLY-ELIGIBLE",
+      "title": "只有普通read miss可提前响应",
+      "component": "设计内部 / 提前响应与完成隔离",
+      "description": "触发：普通read miss、write miss、MMIO分别运行。检查：read在首拍后允许提前返回；write/MMIO需完成状态，probe不得走CPU响应。",
+      "metadata": {
+        "verification_layer": "design_internal",
+        "rtl": "example/CacheSignalCFG/Cache.v:668",
+        "module": "CacheStage3",
+        "anchor": "_io_out_valid_T_23",
+        "observation": "state、afterFirstRead、io_out_valid、操作类型",
+        "required_scenarios": [
+          "read_miss",
+          "write_miss",
+          "MMIO",
+          "probe"
+        ],
+        "sampling": "DriveStable 读取全部驱动完成后的条件；紧邻 RisingEdge 提交后核对寄存器。Stage1 组合真值表显式标记 settled_combinational。",
+        "closure": "各 case 实際采样的必需场景合并达到目标，相关属性与端到端检查通过；未采样部分不报告覆盖率。",
+        "evidence": "cache_internal_coverage.py；本次运行的 internal-checks.json / internal-functional-coverage.json（本地产物）",
+        "basis": "当前 RTL 提取的验证义务，需对照接口规格/设计意图评审；不得以复制 RTL 逻辑作为唯一 oracle。"
+      }
+    },
+    {
+      "id": "CACHE-INT-EARLY-RETURNED-FLAG",
+      "title": "alreadyOutFire 记录一次实际交付",
+      "component": "设计内部 / 提前响应与完成隔离",
+      "description": "触发：早期响应受阻再接受，余下refill继续。检查：未接受不置位；接受后置位并保持到下一IDLE；不能因valid出现就记已交付。",
+      "metadata": {
+        "verification_layer": "design_internal",
+        "rtl": "example/CacheSignalCFG/Cache.v:849",
+        "module": "CacheStage3",
+        "anchor": "alreadyOutFire",
+        "observation": "alreadyOutFire、CPU接受、state",
+        "required_scenarios": [
+          "stalled",
+          "accepted",
+          "next_idle"
+        ],
+        "sampling": "DriveStable 读取全部驱动完成后的条件；紧邻 RisingEdge 提交后核对寄存器。Stage1 组合真值表显式标记 settled_combinational。",
+        "closure": "各 case 实際采样的必需场景合并达到目标，相关属性与端到端检查通过；未采样部分不报告覆盖率。",
+        "evidence": "cache_internal_coverage.py；本次运行的 internal-checks.json / internal-functional-coverage.json（本地产物）",
+        "basis": "当前 RTL 提取的验证义务，需对照接口规格/设计意图评审；不得以复制 RTL 逻辑作为唯一 oracle。"
+      }
+    },
+    {
+      "id": "CACHE-INT-EARLY-NO-DUPLICATE",
+      "title": "早期返回后不重复输出",
+      "component": "设计内部 / 提前响应与完成隔离",
+      "description": "触发：demand word已接受，后续refill尚在进行。检查：后续拍不得再次交付CPU响应；最后refill完成仍能退休。",
+      "metadata": {
+        "verification_layer": "design_internal",
+        "rtl": "example/CacheSignalCFG/Cache.v:668",
+        "module": "CacheStage3",
+        "anchor": "_io_out_valid_T_23",
+        "observation": "alreadyOutFire、CPU响应事件、isFinish",
+        "required_scenarios": [
+          "remaining_refill",
+          "finish"
+        ],
+        "sampling": "DriveStable 读取全部驱动完成后的条件；紧邻 RisingEdge 提交后核对寄存器。Stage1 组合真值表显式标记 settled_combinational。",
+        "closure": "各 case 实際采样的必需场景合并达到目标，相关属性与端到端检查通过；未采样部分不报告覆盖率。",
+        "evidence": "cache_internal_coverage.py；本次运行的 internal-checks.json / internal-functional-coverage.json（本地产物）",
+        "basis": "当前 RTL 提取的验证义务，需对照接口规格/设计意图评审；不得以复制 RTL 逻辑作为唯一 oracle。"
+      }
+    },
+    {
+      "id": "CACHE-INT-EARLY-FINAL-WHILE-STALLED",
+      "title": "首响应未取走时refill先结束",
+      "component": "设计内部 / 提前响应与完成隔离",
+      "description": "触发：CPU持续背压，完整refill先到末拍。检查：最终态保留需求数据，直到CPU接受后再退休；不丢请求上下文。",
+      "metadata": {
+        "verification_layer": "design_internal",
+        "rtl": "example/CacheSignalCFG/Cache.v:671",
+        "module": "CacheStage3",
+        "anchor": "_io_isFinish_T_13",
+        "observation": "inRdataRegDemand、state=7、valid_1、isFinish",
+        "required_scenarios": [
+          "full_refill_before_CPU_accept"
+        ],
+        "sampling": "DriveStable 读取全部驱动完成后的条件；紧邻 RisingEdge 提交后核对寄存器。Stage1 组合真值表显式标记 settled_combinational。",
+        "closure": "各 case 实際采样的必需场景合并达到目标，相关属性与端到端检查通过；未采样部分不报告覆盖率。",
+        "evidence": "cache_internal_coverage.py；本次运行的 internal-checks.json / internal-functional-coverage.json（本地产物）",
+        "basis": "当前 RTL 提取的验证义务，需对照接口规格/设计意图评审；不得以复制 RTL 逻辑作为唯一 oracle。"
+      }
+    },
+    {
+      "id": "CACHE-INT-WRITEBACK-VICTIM-ADDRESS",
+      "title": "写回地址来自victim tag",
+      "component": "设计内部 / victim、写回及dirty更新",
+      "description": "触发：新请求与victim同set不同tag。检查：写回基址由victim tag+当前set+零offset组成；不能使用新请求tag。",
+      "metadata": {
+        "verification_layer": "design_internal",
+        "rtl": "example/CacheSignalCFG/Cache.v:583",
+        "module": "CacheStage3",
+        "anchor": "wire [31:0] waddr",
+        "observation": "meta_tag、waymask、waddr与独立目录模型",
+        "required_scenarios": [
+          "way0",
+          "way1",
+          "way2",
+          "way3",
+          "high_tag_bits"
+        ],
+        "sampling": "DriveStable 读取全部驱动完成后的条件；紧邻 RisingEdge 提交后核对寄存器。Stage1 组合真值表显式标记 settled_combinational。",
+        "closure": "各 case 实際采样的必需场景合并达到目标，相关属性与端到端检查通过；未采样部分不报告覆盖率。",
+        "evidence": "cache_internal_coverage.py；本次运行的 internal-checks.json / internal-functional-coverage.json（本地产物）",
+        "basis": "当前 RTL 提取的验证义务，需对照接口规格/设计意图评审；不得以复制 RTL 逻辑作为唯一 oracle。"
+      }
+    },
+    {
+      "id": "CACHE-INT-WRITEBACK-COUNT",
+      "title": "写回计数只随命令接受前进",
+      "component": "设计内部 / victim、写回及dirty更新",
+      "description": "触发：八拍写回，首/中/末拍memory ready受阻。检查：writeBeatCnt在未接受时保持，每次接受加1，八拍回绕；数据地址与计数一致。",
+      "metadata": {
+        "verification_layer": "design_internal",
+        "rtl": "example/CacheSignalCFG/Cache.v:633",
+        "module": "CacheStage3",
+        "anchor": "_value_T_11",
+        "observation": "writeBeatCnt、data读地址、mem请求事件",
+        "required_scenarios": [
+          "first_stall",
+          "middle_stall",
+          "last_stall",
+          "wrap"
+        ],
+        "sampling": "DriveStable 读取全部驱动完成后的条件；紧邻 RisingEdge 提交后核对寄存器。Stage1 组合真值表显式标记 settled_combinational。",
+        "closure": "各 case 实際采样的必需场景合并达到目标，相关属性与端到端检查通过；未采样部分不报告覆盖率。",
+        "evidence": "cache_internal_coverage.py；本次运行的 internal-checks.json / internal-functional-coverage.json（本地产物）",
+        "basis": "当前 RTL 提取的验证义务，需对照接口规格/设计意图评审；不得以复制 RTL 逻辑作为唯一 oracle。"
+      }
+    },
+    {
+      "id": "CACHE-INT-WRITEBACK-LAST-CMD",
+      "title": "第八写回数据使用末拍命令",
+      "component": "设计内部 / victim、写回及dirty更新",
+      "description": "触发：writeBeatCnt从0到7。检查：前七拍cmd=3，第八拍cmd=7；末拍受阻不提前进入等待确认。",
+      "metadata": {
+        "verification_layer": "design_internal",
+        "rtl": "example/CacheSignalCFG/Cache.v:585",
+        "module": "CacheStage3",
+        "anchor": "_cmd_T_2",
+        "observation": "mem cmd、计数与state",
+        "required_scenarios": [
+          "0_to_6",
+          "7_stalled",
+          "7_accepted"
+        ],
+        "sampling": "DriveStable 读取全部驱动完成后的条件；紧邻 RisingEdge 提交后核对寄存器。Stage1 组合真值表显式标记 settled_combinational。",
+        "closure": "各 case 实際采样的必需场景合并达到目标，相关属性与端到端检查通过；未采样部分不报告覆盖率。",
+        "evidence": "cache_internal_coverage.py；本次运行的 internal-checks.json / internal-functional-coverage.json（本地产物）",
+        "basis": "当前 RTL 提取的验证义务，需对照接口规格/设计意图评审；不得以复制 RTL 逻辑作为唯一 oracle。"
+      }
+    },
+    {
+      "id": "CACHE-INT-WRITEBACK-DIRTY-SET",
+      "title": "clean write hit置dirty",
+      "component": "设计内部 / victim、写回及dirty更新",
+      "description": "触发：clean行首次写，包括零mask；随后再次写同一dirty行。检查：首次按该RTL置dirty，再写dirty不重复metadata更新；零mask不改变数据但仍属于write。",
+      "metadata": {
+        "verification_layer": "design_internal",
+        "rtl": "example/CacheSignalCFG/Cache.v:556",
+        "module": "CacheStage3",
+        "anchor": "metaHitWriteBus_x5",
+        "observation": "meta_dirty、metaHitWriteBus、dataWriteBus",
+        "required_scenarios": [
+          "clean_partial",
+          "clean_zero_mask",
+          "already_dirty"
+        ],
+        "sampling": "DriveStable 读取全部驱动完成后的条件；紧邻 RisingEdge 提交后核对寄存器。Stage1 组合真值表显式标记 settled_combinational。",
+        "closure": "各 case 实際采样的必需场景合并达到目标，相关属性与端到端检查通过；未采样部分不报告覆盖率。",
+        "evidence": "cache_internal_coverage.py；本次运行的 internal-checks.json / internal-functional-coverage.json（本地产物）",
+        "basis": "当前 RTL 提取的验证义务，需对照接口规格/设计意图评审；不得以复制 RTL 逻辑作为唯一 oracle。"
+      }
+    },
+    {
+      "id": "CACHE-INT-WRITEBACK-BYTE-ENABLE",
+      "title": "byte enable 展开与未写字节保留",
+      "component": "设计内部 / victim、写回及dirty更新",
+      "description": "触发：one-hot/zero/full wmask以及read命令携带非零wmask。检查：write每一mask位控制对应8bit；read的wordMask为零，不能误写数据。",
+      "metadata": {
+        "verification_layer": "design_internal",
+        "rtl": "example/CacheSignalCFG/Cache.v:543",
+        "module": "CacheStage3",
+        "anchor": "wordMask",
+        "observation": "wordMask、dataRead、新写数据、逐字节模型",
+        "required_scenarios": [
+          "mask01",
+          "mask02",
+          "mask04",
+          "mask08",
+          "mask10",
+          "mask20",
+          "mask40",
+          "mask80",
+          "zero",
+          "full",
+          "read_with_mask"
+        ],
+        "sampling": "DriveStable 读取全部驱动完成后的条件；紧邻 RisingEdge 提交后核对寄存器。Stage1 组合真值表显式标记 settled_combinational。",
+        "closure": "各 case 实際采样的必需场景合并达到目标，相关属性与端到端检查通过；未采样部分不报告覆盖率。",
+        "evidence": "cache_internal_coverage.py；本次运行的 internal-checks.json / internal-functional-coverage.json（本地产物）",
+        "basis": "当前 RTL 提取的验证义务，需对照接口规格/设计意图评审；不得以复制 RTL 逻辑作为唯一 oracle。"
+      }
+    },
+    {
+      "id": "CACHE-INT-COHERENCE-COUNT-INIT",
+      "title": "probe header接受装载起始word",
+      "component": "设计内部 / probe与release内部控制",
+      "description": "触发：hit/miss header接受和header受阻。检查：仅header接受时readBeatCnt装载addr_wordIndex；受阻不预先更新。",
+      "metadata": {
+        "verification_layer": "design_internal",
+        "rtl": "example/CacheSignalCFG/Cache.v:795",
+        "module": "CacheStage3",
+        "anchor": "if (probe)",
+        "observation": "readBeatCnt、probe、coh接受",
+        "required_scenarios": [
+          "hit",
+          "miss",
+          "stalled"
+        ],
+        "sampling": "DriveStable 读取全部驱动完成后的条件；紧邻 RisingEdge 提交后核对寄存器。Stage1 组合真值表显式标记 settled_combinational。",
+        "closure": "各 case 实際采样的必需场景合并达到目标，相关属性与端到端检查通过；未采样部分不报告覆盖率。",
+        "evidence": "cache_internal_coverage.py；本次运行的 internal-checks.json / internal-functional-coverage.json（本地产物）",
+        "basis": "当前 RTL 提取的验证义务，需对照接口规格/设计意图评审；不得以复制 RTL 逻辑作为唯一 oracle。"
+      }
+    },
+    {
+      "id": "CACHE-INT-COHERENCE-COUNT-STEP",
+      "title": "release遍历计数与完成计数分离",
+      "component": "设计内部 / probe与release内部控制",
+      "description": "触发：不同start_word的八拍release，插入背压。检查：readBeatCnt跟随地址回绕；releaseLast_c_value从0计接受拍数，不因起始word改变结束位置。",
+      "metadata": {
+        "verification_layer": "design_internal",
+        "rtl": "example/CacheSignalCFG/Cache.v:622",
+        "module": "CacheStage3",
+        "anchor": "_GEN_27",
+        "observation": "两计数器、coh接受、数据地址",
+        "required_scenarios": [
+          "start0",
+          "start1",
+          "start2",
+          "start3",
+          "start4",
+          "start5",
+          "start6",
+          "start7",
+          "gap",
+          "wrap"
+        ],
+        "sampling": "DriveStable 读取全部驱动完成后的条件；紧邻 RisingEdge 提交后核对寄存器。Stage1 组合真值表显式标记 settled_combinational。",
+        "closure": "各 case 实際采样的必需场景合并达到目标，相关属性与端到端检查通过；未采样部分不报告覆盖率。",
+        "evidence": "cache_internal_coverage.py；本次运行的 internal-checks.json / internal-functional-coverage.json（本地产物）",
+        "basis": "当前 RTL 提取的验证义务，需对照接口规格/设计意图评审；不得以复制 RTL 逻辑作为唯一 oracle。"
+      }
+    },
+    {
+      "id": "CACHE-INT-COHERENCE-LAST-QUALIFY",
+      "title": "releaseLast依赖接受",
+      "component": "设计内部 / probe与release内部控制",
+      "description": "触发：release计数=7，ready从低到高。检查：只有实际接受末拍时releaseLast为真；不能将ready低时cmd值误当已完成。",
+      "metadata": {
+        "verification_layer": "design_internal",
+        "rtl": "example/CacheSignalCFG/Cache.v:602",
+        "module": "CacheStage3",
+        "anchor": "wire  releaseLast",
+        "observation": "releaseLast_c_value、releaseLast、cmd、accept",
+        "required_scenarios": [
+          "last_blocked",
+          "last_fire"
+        ],
+        "sampling": "DriveStable 读取全部驱动完成后的条件；紧邻 RisingEdge 提交后核对寄存器。Stage1 组合真值表显式标记 settled_combinational。",
+        "closure": "各 case 实際采样的必需场景合并达到目标，相关属性与端到端检查通过；未采样部分不报告覆盖率。",
+        "evidence": "cache_internal_coverage.py；本次运行的 internal-checks.json / internal-functional-coverage.json（本地产物）",
+        "basis": "当前 RTL 提取的验证义务，需对照接口规格/设计意图评审；不得以复制 RTL 逻辑作为唯一 oracle。"
+      }
+    },
+    {
+      "id": "CACHE-INT-COHERENCE-REPEATED",
+      "title": "连续probe之间计数复用",
+      "component": "设计内部 / probe与release内部控制",
+      "description": "触发：两个hit probe，中间插入miss probe。检查：每个完整hit八拍后计数回零，miss header不消耗release计数，后续hit仍八拍。",
+      "metadata": {
+        "verification_layer": "design_internal",
+        "rtl": "example/CacheSignalCFG/Cache.v:863",
+        "module": "CacheStage3",
+        "anchor": "releaseLast_c_value",
+        "observation": "releaseLast_c_value、probe序号和响应拍数",
+        "required_scenarios": [
+          "hit_hit",
+          "hit_miss_hit"
+        ],
+        "sampling": "DriveStable 读取全部驱动完成后的条件；紧邻 RisingEdge 提交后核对寄存器。Stage1 组合真值表显式标记 settled_combinational。",
+        "closure": "各 case 实際采样的必需场景合并达到目标，相关属性与端到端检查通过；未采样部分不报告覆盖率。",
+        "evidence": "cache_internal_coverage.py；本次运行的 internal-checks.json / internal-functional-coverage.json（本地产物）",
+        "basis": "当前 RTL 提取的验证义务，需对照接口规格/设计意图评审；不得以复制 RTL 逻辑作为唯一 oracle。"
+      }
+    },
+    {
+      "id": "CACHE-INT-COHERENCE-READ-SOURCE",
+      "title": "release使用被选中way的最新数组值",
+      "component": "设计内部 / probe与release内部控制",
+      "description": "触发：clean/dirty各way分别命中，其他way放不同数据。检查：release取当前选中way SRAM数据而非旧demand缓存或其他way。",
+      "metadata": {
+        "verification_layer": "design_internal",
+        "rtl": "example/CacheSignalCFG/Cache.v:567",
+        "module": "CacheStage3",
+        "anchor": "dataWay_0_data",
+        "observation": "dataWay_*、waymask、coh rdata、独立line模型",
+        "required_scenarios": [
+          "way0_clean",
+          "way0_dirty",
+          "way1_clean",
+          "way1_dirty",
+          "way2_clean",
+          "way2_dirty",
+          "way3_clean",
+          "way3_dirty"
+        ],
+        "sampling": "DriveStable 读取全部驱动完成后的条件；紧邻 RisingEdge 提交后核对寄存器。Stage1 组合真值表显式标记 settled_combinational。",
+        "closure": "各 case 实際采样的必需场景合并达到目标，相关属性与端到端检查通过；未采样部分不报告覆盖率。",
+        "evidence": "cache_internal_coverage.py；本次运行的 internal-checks.json / internal-functional-coverage.json（本地产物）",
+        "basis": "当前 RTL 提取的验证义务，需对照接口规格/设计意图评审；不得以复制 RTL 逻辑作为唯一 oracle。"
+      }
+    },
+    {
+      "id": "CACHE-INT-ARBITRATION-PROBE-PRIORITY",
+      "title": "CPU/probe同时请求的固定优先级",
+      "component": "设计内部 / 多请求仲裁与副作用互斥",
+      "description": "触发：CPU与coherence同时valid，Stage1可接受。检查：coherence端口0优先、CPU不接受；payload取probe，CPU请求保留待后续接受。此RTL不是round-robin。",
+      "metadata": {
+        "verification_layer": "design_internal",
+        "rtl": "example/CacheSignalCFG/Cache.v:2819",
+        "module": "Cache",
+        "anchor": "arb_io_in_0_valid",
+        "observation": "arb grants、两输入接受、输出payload",
+        "required_scenarios": [
+          "both",
+          "CPU_only",
+          "probe_only"
+        ],
+        "sampling": "DriveStable 读取全部驱动完成后的条件；紧邻 RisingEdge 提交后核对寄存器。Stage1 组合真值表显式标记 settled_combinational。",
+        "closure": "各 case 实際采样的必需场景合并达到目标，相关属性与端到端检查通过；未采样部分不报告覆盖率。",
+        "evidence": "cache_internal_coverage.py；本次运行的 internal-checks.json / internal-functional-coverage.json（本地产物）",
+        "basis": "当前 RTL 提取的验证义务，需对照接口规格/设计意图评审；不得以复制 RTL 逻辑作为唯一 oracle。"
+      }
+    },
+    {
+      "id": "CACHE-INT-ARBITRATION-DATA-PRIORITY",
+      "title": "高优先级读释放后的Stage3进展",
+      "component": "设计内部 / 多请求仲裁与副作用互斥",
+      "description": "触发：Stage1读占用data端口，Stage3待writeback/release；之后停止Stage1请求。检查：无授予时Stage3不前进，端口可用后恢复并完成；不要求无限高优先级流量下公平。",
+      "metadata": {
+        "verification_layer": "design_internal",
+        "rtl": "example/CacheSignalCFG/Cache.v:2813",
+        "module": "Cache",
+        "anchor": "dataArray_io_r_1_req_valid",
+        "observation": "dataArray仲裁、state2、完成事件",
+        "required_scenarios": [
+          "writeback_wait",
+          "release_wait",
+          "priority_released"
+        ],
+        "sampling": "DriveStable 读取全部驱动完成后的条件；紧邻 RisingEdge 提交后核对寄存器。Stage1 组合真值表显式标记 settled_combinational。",
+        "closure": "各 case 实際采样的必需场景合并达到目标，相关属性与端到端检查通过；未采样部分不报告覆盖率。",
+        "evidence": "cache_internal_coverage.py；本次运行的 internal-checks.json / internal-functional-coverage.json（本地产物）",
+        "basis": "当前 RTL 提取的验证义务，需对照接口规格/设计意图评审；不得以复制 RTL 逻辑作为唯一 oracle。"
+      }
+    },
+    {
+      "id": "CACHE-INT-ARBITRATION-WRITE-EXCLUSION",
+      "title": "hit-write与refill写不能同时发生",
+      "component": "设计内部 / 多请求仲裁与副作用互斥",
+      "description": "触发：合法流水流量，使hit-write紧接refill结束。检查：两种写使能互斥；RTL断言开启且冲突负例能报错，不能让arbiter静默吞掉一方。",
+      "metadata": {
+        "verification_layer": "design_internal",
+        "rtl": "example/CacheSignalCFG/Cache.v:937",
+        "module": "CacheStage3",
+        "anchor": "hitWrite & dataRefillWriteBus_x9",
+        "observation": "s3 hitWrite、dataRefillWriteBus_x9、assertion日志",
+        "required_scenarios": [
+          "legal_handoff",
+          "negative_conflict"
+        ],
+        "sampling": "DriveStable 读取全部驱动完成后的条件；紧邻 RisingEdge 提交后核对寄存器。Stage1 组合真值表显式标记 settled_combinational。",
+        "closure": "各 case 实際采样的必需场景合并达到目标，相关属性与端到端检查通过；未采样部分不报告覆盖率。",
+        "evidence": "cache_internal_coverage.py；本次运行的 internal-checks.json / internal-functional-coverage.json（本地产物）",
+        "basis": "当前 RTL 提取的验证义务，需对照接口规格/设计意图评审；不得以复制 RTL 逻辑作为唯一 oracle。"
+      }
+    },
+    {
+      "id": "CACHE-INT-RESET-CONTROL",
+      "title": "复位清空流水和控制",
+      "component": "设计内部 / 复位与不支持的操作",
+      "description": "触发：空闲/进行中reset，随后重新完成metadata初始化。检查：顶层valid清零，Stage3 state/state2/计数/早期响应标志和Stage2 forwarding标志复位；没有旧响应泄漏。",
+      "metadata": {
+        "verification_layer": "design_internal",
+        "rtl": "example/CacheSignalCFG/Cache.v:2834",
+        "module": "Cache",
+        "anchor": "if (reset)",
+        "observation": "流水valid、s3控制、s2 forward、端口输出",
+        "required_scenarios": [
+          "idle",
+          "refill",
+          "writeback",
+          "release"
+        ],
+        "sampling": "DriveStable 读取全部驱动完成后的条件；紧邻 RisingEdge 提交后核对寄存器。Stage1 组合真值表显式标记 settled_combinational。",
+        "closure": "各 case 实際采样的必需场景合并达到目标，相关属性与端到端检查通过；未采样部分不报告覆盖率。",
+        "evidence": "cache_internal_coverage.py；本次运行的 internal-checks.json / internal-functional-coverage.json（本地产物）",
+        "basis": "当前 RTL 提取的验证义务，需对照接口规格/设计意图评审；不得以复制 RTL 逻辑作为唯一 oracle。"
+      }
+    },
+    {
+      "id": "CACHE-INT-RESET-UNRESET-DATA",
+      "title": "数据SRAM未复位时不可当作已初始化",
+      "component": "设计内部 / 复位与不支持的操作",
+      "description": "触发：reset后metadata无效，data SRAM保留任意旧内容。检查：首次读取必须miss/refill，不能根据仿真器默认零值直接命中；填充后数据由独立模型验证。",
+      "metadata": {
+        "verification_layer": "design_internal",
+        "rtl": "example/CacheSignalCFG/Cache.v:1576",
+        "module": "SRAMTemplate_1",
+        "anchor": "module SRAMTemplate_1",
+        "observation": "metadata valid、hit、refill、数据结果",
+        "required_scenarios": [
+          "old_nonzero_data",
+          "first_miss"
+        ],
+        "sampling": "DriveStable 读取全部驱动完成后的条件；紧邻 RisingEdge 提交后核对寄存器。Stage1 组合真值表显式标记 settled_combinational。",
+        "closure": "各 case 实際采样的必需场景合并达到目标，相关属性与端到端检查通过；未采样部分不报告覆盖率。",
+        "evidence": "cache_internal_coverage.py；本次运行的 internal-checks.json / internal-functional-coverage.json（本地产物）",
+        "basis": "当前 RTL 提取的验证义务，需对照接口规格/设计意图评审；不得以复制 RTL 逻辑作为唯一 oracle。"
+      }
+    },
+    {
+      "id": "CACHE-INT-BURST-READ-HIT",
+      "title": "CPU read-burst命中控制路径",
+      "component": "设计内部 / 普通读写之外的burst控制",
+      "description": "触发：已安装行收到cmd=2，从不同word开始并施加背压。检查：首字后进入state8，地址顺序回绕、累计八次交付后结束；需按SimpleBus契约独立审查cmd/数据，不能用probe结果代替。",
+      "metadata": {
+        "verification_layer": "design_internal",
+        "rtl": "example/CacheSignalCFG/Cache.v:513",
+        "module": "CacheStage3",
+        "anchor": "hitReadBurst",
+        "observation": "hitReadBurst、respToL1Last_c_value、io_dataReadRespToL1、顶层响应",
+        "required_scenarios": [
+          "start0",
+          "start7",
+          "stalled"
+        ],
+        "sampling": "DriveStable 读取全部驱动完成后的条件；紧邻 RisingEdge 提交后核对寄存器。Stage1 组合真值表显式标记 settled_combinational。",
+        "closure": "各 case 实際采样的必需场景合并达到目标，相关属性与端到端检查通过；未采样部分不报告覆盖率。",
+        "evidence": "cache_internal_coverage.py；本次运行的 internal-checks.json / internal-functional-coverage.json（本地产物）",
+        "basis": "当前 RTL 提取的验证义务，需对照接口规格/设计意图评审；不得以复制 RTL 逻辑作为唯一 oracle。"
+      }
+    },
+    {
+      "id": "CACHE-INT-ERROR-ASSERTIONS",
+      "title": "错误条件触发指定 RTL 断言",
+      "component": "设计内部 / 错误检测",
+      "description": "触发：真实 DUT 中重复 tag、MMIO 命中、metadata/data 写冲突或禁止 flush。检查：实际错误条件成立、指定 RTL assertion 及 fatal 位置、SIGABRT 和该分支非零覆盖计数；模块与顶层分别留证。",
+      "metadata": {
+        "verification_layer": "design_internal",
+        "rtl": "example/CacheSignalCFG/Cache.v:262,876,900,924,948",
+        "module": "Cache / CacheStage2 / CacheStage3",
+        "anchor": "RTL assertion conditions",
+        "observation": "错误条件、断言日志、fatal 源码位置、进程退出信号及原始执行计数",
+        "required_scenarios": [
+          "stage2.duplicate_tag", "stage3.mmio_hit", "stage3.meta_conflict", "stage3.write_conflict", "stage3.flush",
+          "cache.duplicate_tag", "cache.mmio_hit", "cache.meta_conflict", "cache.write_conflict", "cache.flush"
+        ],
+        "sampling": "在触发时钟前读取 DUT 条件；指定 assertion 触发时先保存原生计数，再调用原 fatal 处理。",
+        "closure": "十个场景分别满足真实条件、指定诊断与 fatal 位置、SIGABRT 及该 RTL 分支命中；任意崩溃或仅检查器失败不算通过。",
+        "evidence": "test_cache_assertions.py / test_duplicate_tag_triggers_rtl_assertion；assertion-witness.json / rtl-assertion.log / verilator-coverage.dat",
+        "basis": "当前 RTL 的明确禁止性断言。内部 register/RAM 故障注入是 DUT 错误检测测试，不是合法 CPU 流量。"
+      }
+    },
+    {
+      "id": "CACHE-INT-ERROR-STATE-RESET",
+      "title": "非法控制状态的复位恢复",
+      "component": "设计内部 / 错误恢复",
+      "description": "触发：完整 Cache 空闲时注入非法主状态15、读取子状态3或两者。检查：复位清除控制状态，重新初始化后访问发生 refill 且返回独立 memory 模型的数据；不要求未规定的自动恢复。",
+      "metadata": {
+        "verification_layer": "design_internal",
+        "rtl": "example/CacheSignalCFG/Cache.v:763,816,824",
+        "module": "Cache",
+        "anchor": "state / state2 reset",
+        "observation": "实际注入值、复位前后 valid/状态/计数、无旧响应及恢复访问",
+        "required_scenarios": ["main_state", "read_substate", "both"],
+        "sampling": "FallingEdge 写实际寄存器，经过一个接受沿执行非法编码路径；随后核对 reset 和独立模型的端到端响应。",
+        "closure": "三个场景实际注入并执行；reset 后控制归零、metadata 重建、无旧响应，后续 refill 和数据正确。",
+        "evidence": "test_reset_recovers_illegal_cache_control_state；illegal-state-reset-witness.json / internal-checks.json",
+        "basis": "现有复位契约。非法状态的自动恢复没有独立规格，不据当前默认保持行为定义新要求。"
+      }
+    },
+    {
+      "id": "CACHE-INT-ERROR-FLUSH-LATCH",
+      "title": "异常 flush 标志清理",
+      "component": "设计内部 / 错误恢复",
+      "description": "触发：命中响应受阻时注入 needFlush=1。检查：受阻时保持，响应接受或复位清零，保留/取消响应与后续访问正确。",
+      "metadata": {
+        "verification_layer": "design_internal",
+        "rtl": "example/CacheSignalCFG/Cache.v:787",
+        "module": "Cache",
+        "anchor": "needFlush",
+        "observation": "真实 latch、响应背压与接受、复位、CPU 数据及后续访问",
+        "required_scenarios": ["accept", "reset"],
+        "sampling": "注入真实 needFlush register，核对三个受阻周期；随后分别接受响应或施加 reset，并比较独立 memory 模型。",
+        "closure": "两条清零路径执行且响应、取消和后续访问正确，io_flush 始终为零。",
+        "evidence": "test_faulted_flush_latch_clears_on_completion_or_reset；faulted-flush-recovery-witness.json / internal-checks.json",
+        "basis": "当前 RTL 明确的响应接受/复位清零逻辑；属于实现行为验证，不承诺可写 Cache 支持正常 flush。"
+      }
+    },
+    {
+      "id": "CACHE-INT-BURST-WRITE-COUNT",
+      "title": "CPU write-burst内部word计数",
+      "component": "设计内部 / 普通读写之外的burst控制",
+      "description": "触发：合法cmd=3序列后cmd=7，穿插输出背压。检查：writeL2BeatCnt只随对应写响应接受推进，burst写地址用该计数，普通写仍用请求word。",
+      "metadata": {
+        "verification_layer": "design_internal",
+        "rtl": "example/CacheSignalCFG/Cache.v:550",
+        "module": "CacheStage3",
+        "anchor": "_GEN_0",
+        "observation": "writeL2BeatCnt、dataHitWriteBus地址、CPU响应",
+        "required_scenarios": [
+          "first",
+          "middle",
+          "last",
+          "stall",
+          "ordinary_after_burst"
+        ],
+        "sampling": "DriveStable 读取全部驱动完成后的条件；紧邻 RisingEdge 提交后核对寄存器。Stage1 组合真值表显式标记 settled_combinational。",
+        "closure": "各 case 实際采样的必需场景合并达到目标，相关属性与端到端检查通过；未采样部分不报告覆盖率。",
+        "evidence": "cache_internal_coverage.py；本次运行的 internal-checks.json / internal-functional-coverage.json（本地产物）",
+        "basis": "当前 RTL 提取的验证义务，需对照接口规格/设计意图评审；不得以复制 RTL 逻辑作为唯一 oracle。"
+      }
+    }
+  ]
+}

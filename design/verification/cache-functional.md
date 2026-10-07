@@ -1,8 +1,127 @@
 # Cache 功能验证报告
 
+> 后续变更：人工 pytest 功能标签、对应插件和完成率报告已移除。本文相关数字和
+> 插件行为仅保留为当时的审查记录，不代表当前功能覆盖。运行命令与当前使用方式见
+> [移除记录](coverage-without-test-tags-2026-09.md)及各项目 README。
+
+2026-10-01 更新：77 项内部要求已接入全 Cache 及 Stage1/2/3 检查，新增并发仲裁、
+流水交接、初始化全 set、forwarding、beat 计数、在途复位与 RTL assertion 负例。
+CPU/probe 并发还发现并修正了通用 Driver 过早读取 ready 的缺陷。读 burst 后续数据
+重复 demand word 的 RTL 反例单独保存；触发覆盖不表示该行为正确。
+逐项契约及实测状态见[功能点明细](cache-functional-points-2026-09.md)。下文保留历史记录。
+
+最终回归为 27 passed，合并 394 个内部场景 bins 激活 100%，76/77 项符合本基线关闭条件。
+旧 overlap “丢响应”结论已更正：同步探针在同拍 refill 输入更新前登记了 ready。
+修正后第二请求实际接受于 half-tick 382、响应于 410；异步重叠回归及 300 笔随机压力也通过。
+该旧记录不能作为 RTL 缺陷证据。当前未关闭的设计属性是 CPU read burst 后续数据错误。
+完整结果见2026-10-01 证据（本地产物：`rtl-property-evidence-2026-10-01/results.json`）。
+
+## 历史重构验证（2026-09-29）
+
+本轮使用当前 Picker/xspcomm 重新生成带 signal_tree、VPI 和 coverage 的 memory-direct
+DUT。可复现构建和运行命令见[Cache 示例说明](../../examples/integration/cache/README.md)。
+以下历史记录保留当时的定位过程；当前功能与数值以上方 2026-10-01 更新为准。
+
+CacheDriver 继承 SyncDriver，保留项目已有时序；八组接口均已完成 Bundle/Interface
+绑定。经用户明确授权，coherence 增加项目内 probe/release 流量；框架层未增加协议假设。
+
+新增零 mask、8 个独立 byte mask、全 mask，全部 refill 起始 word 及整行 hit 验证，
+干净行替换不写回、脏 victim 全部 8 word 数据核对。已有 write allocate、背压、MMIO
+和三 set 冲突随机流量保留。Scoreboard 核对读数据和 Monitor 请求快照，附真实接受与
+响应事件；新增 4 个 coverpoint（operation/path/word/mask）及 operation×path cross。
+
+| seed | 随机操作 | 上游事务 | checked reads | refill | writeback | memory 请求 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 定向，无随机 | 0 | 129 | 111 | 18 | 1 | 26 |
+| `1` | 300 | 558 | 411 | 196 | 86 | 884 |
+| `0x1234` | 300 | 570 | 411 | 205 | 100 | 1005 |
+| `0xdeadbeef` | 300 | 564 | 411 | 201 | 94 | 953 |
+
+以上 campaign 均通过，CPU 与 coherence 覆盖组均为 100%，每组 2 笔 MMIO。
+每组另有 18 次 coherence probe、146 个响应 beat，不计入表中的 CPU 事务数。
+新增定向流量改变了内部替换状态，因此随机 refill/writeback 数量不同于先前基线。
+写响应 cmd/user 和写后读另有检查，checked reads 只统计读数据比较，不伪称每笔写都
+返回了可比较的数据。后台异常在退出传播；即使检查失败，也继续关闭 task、Monitor、
+Driver、backend 并保存 run.json、功能覆盖及 HTML。故意损坏返回数据的实验产生
+ScoreboardMismatch，保留 failed 产物，退出后无残留 asyncio 任务。
+
+overlap 记录只捕获特定响应超时；第二笔读的数据错误不会被归为已知缺陷，
+即使打开 allow-known-bugs 也实际传播 ScoreboardMismatch。随机读的期望来自独立逻辑
+状态与初始内存值，不从可能被错误 writeback 污染的 backing memory 推导。
+
+**已知 overlap 缺陷仍未解决。** 当前异步 campaign 不一定能命中它；同步 StepHalf
+探针依旧观测到第一响应 half-tick 377、第二请求接受 380，但之后没有第二响应。
+脚本按预期断言失败。正常 campaign 的通过不能替代该探针，不能得出 DUT 已无缺陷。
+
+未验证 CPU/coherence 并发仲裁、flush 的精确语义、非 8-byte size、非对齐/非法请求。
+100% 仅对应上述定义的 bin，不代表全部 Cache 功能或 RTL 行覆盖。
+
+## Coherence 项目增量
+
+读取现有 CacheStage3 RTL 后，按其实际协议加入 CoherenceAgent：
+
+| 请求 / 响应 | 项目规则 |
+| --- | --- |
+| probe 请求 | cmd=8，size=3，地址选择起始 word |
+| miss | 仅一个 cmd=8 响应头；不产生 refill 或 MMIO 访问 |
+| hit | cmd=C 响应头，随后 8 个 release beat；前七拍 cmd=0，末拍接受时 cmd=6 |
+| 顺序 | 从请求 word 开始，在 64-byte line 内回绕 |
+| 状态 | probe 不 invalidate、不向 backing memory 写回；脏数据应直接出现在 release 中 |
+
+ProbeDriver 继承 SyncDriver，声明请求信号和响应 ready 的 ownership；具名
+ReadyValidMonitor 采集不可变响应快照。CoherenceAgent 实例注册给 Execution，项目
+probe 方法组装一个响应头及可选整行数据，并用独立期望 line 做直接 Scoreboard 比较。
+没有把多拍接口硬套入通用 Agent 的单响应检查连接，没有修改通用组件或调度器。
+
+两次 miss 分别无背压/头部背压；8 次 clean、8 次 dirty 分别覆盖全部起始 word，
+其间停住 header、首个数据、中间数据和最后数据 beat。dirty 场景使用 byte mask
+合并后的独立 line 作为期望。每次 probe 检查没有新增 memory/MMIO 流量；最后重新
+读取全行，确认仍然 hit 且 backing memory 保持旧数据。
+
+输入接受和完整响应各有 100 周期预算，结束观察 3 周期；拒绝输入接受前的旧响应和
+观察窗口内额外响应。末拍 cmd 依赖 ready 是当前 RTL 的实际行为：检查 ready 持续为低
+时的稳定性、接受时的最终序列，不宣称 ready 翻转前后 cmd 不变，也不推广这条规则。
+
+一个项目回归文件 test_cache_coherence.py 运行正常 campaign、六种 Monitor 边界故障
+（header/data/last 错误、missing、duplicate、stale），以及外部取消。故障注入改变
+验证端观测，不修改 RTL；只有确实触发预期错误才算通过。退出后检查 native watcher=0、
+backend lease 释放、Monitor 关闭、driver ownership 释放、请求 valid/响应 ready 归零，
+无新遗留任务；外部取消不影响宿主任务。
+
+coherence-transactions.json 保存接受 tick 和各响应 beat 的 tick/cmd/data，失败时保留
+部分记录及原始错误。功能覆盖增加 state/start_word/stalled 和 state×stalled。
+原 pytest 三个标签仅区分正常行为、故障检测和取消清理，当时为 **8 passed、3/3 PASS**；
+另完成上表三组各 300 次随机操作。后续按明确验收条件细化，完整定义见
+[verification_plan.json](../../examples/integration/cache/verification_plan.json)。
+
+第一版 33 点中有 22 个正常要求：11 个 CPU 数据、替换、旁路和观察要求，以及 11 个 coherence
+状态、回绕、分拍背压、隔离和保留行要求。六类故障各自一个点，取消一点。正常要求共用
+现有 campaign，并检查 probe 拍数、起始 word 和背压位置的实际证据；故障按参数实例关联。
+现有测试仍为 8 项，没有为增加标签而重复仿真。
+
+当时四个 NOT_RUN 分别为 CPU valid 连续性、CPU overlap 缺陷、CPU/probe 并发及 flush。
+逐条核对时发现 CPU response 循环仅在 valid 为高时比较数据，尚不能检查短暂撤回 valid，
+所以没有将这一要求归入已完成的响应快照稳定性。独立 overlap 探针的已知失败在计划中明确
+注明，尚未绑定本 pytest 报告的测试证据；NOT_RUN 不能解释成 DUT 没有该缺陷。
+按当时计划运行结果为 **8 passed、29/33 PASS、4 NOT_RUN，计划完成率 87.88%**。
+完整命令及按场景查看报告的方法见上述 Cache 示例 README。
+
+随后按实际 RTL 补充 77 个内部机制义务，完整计划现为 110 点，当前真实回归仍为
+8 passed、29/110 PASS、81 NOT_RUN。新增点覆盖流水控制、lookup/replacement、forwarding、
+主/子 FSM、数组初始化及仲裁、refill/writeback、提前响应和 burst；没有绑定内部断言的点
+全部保留 NOT_RUN。原 flush 定义同时纠正：当前写型配置的 Stage3 明确禁止 flush，应验证
+启用 RTL assertion 后的非法操作诊断，不能作为普通清空缓存场景。源码基线和逐类要求见
+[RTL 功能点评审](rtl-feature-plan-2026-09.md)。
+
+## 历史验证与定位过程
+
+
 > 验证日期：2026-09-15
 > DUT：`example/CacheSignalCFG/Cache.v` 生成的 `DUTCacheSignalCFG`
 > 接入：Picker `mem_direct` XData + XCommClockBackend + XReactor
+
+> 2026-09-29 代码调整：文中历史使用的 ReadyValidDriver 已移除，当前 CacheDriver
+> 继承 SyncDriver 并复用相同握手 helper。以下真实 DUT 测量仍保留原验证日期。
 
 ## 结论
 
@@ -25,8 +144,8 @@ hit、partial write-allocate、4 路替换、dirty writeback 和 MMIO 数据旁�
 端口方法学回归同时显式绑定了 signal tree 中的八个 ready-valid 子树：CPU req/resp、
 memory req/resp、MMIO req/resp、coherence req/resp。绑定入口严格验证
 `valid/ready/bits` shape、方向和 XData identity；CPU/memory/MMIO 的实际读写已迁移到
-这些 Interface/Bundle。当前 Cache 场景不产生 coherence 流量，因此 coherence 只有
-结构/方向绑定覆盖，不能声称做过其协议功能验证。
+这些 Interface/Bundle。当时 Cache 场景不产生 coherence 流量，只有结构/方向绑定覆盖；
+本轮新增的协议功能验证见开头的 Coherence 项目增量。
 
 ## DUT 行为核对
 
@@ -71,7 +190,7 @@ examples/integration/cache/cache_functional_xreactor.py
 `XDataBackendKind_MemDirect`。因此这里没有使用 MemoryBackend 替代真实 DUT。
 
 当前重构从生成 DUT 内嵌的 signal tree metadata 绑定上游 request `Bundle`，由
-`ReadyValidDriver` 发送；同时把 DUT
+当时的 `ReadyValidDriver` 发送（现已改为项目 CacheDriver/SyncDriver）；同时把 DUT
 产生的下游 memory request 组成 monitor-role `ReadyValid`，由
 `ReadyValidMonitor` 原子快照并与既有 MemoryModel 逐笔核对。一次 80-operation 的
 direct-XData 回归通过，记录 150 个上游 transaction、295 个 memory request、63 个
@@ -158,36 +277,12 @@ half-tick 380 以 ready/valid 接受，之后 120 个同步周期内只记录到
 
 ## 运行方式
 
-默认模式把已知协议缺陷视为失败：
+旧生成包和早期命令已由[当前示例 README](../../examples/integration/cache/README.md)
+中的构建、campaign 与独立探针命令替代。调试可用 CACHE_TRACE=1。
 
-```bash
-PYTHONPATH=/tmp/xreactor-cache-standard:$PWD/src \
-  python examples/integration/cache/cache_functional_xreactor.py \
-  --seed 0x1234 --random-ops 300
-```
+## 当时尚未覆盖（现状见开头）
 
-为了继续收集完整覆盖数据，同时报告但不因已知缺陷返回非零：
-
-```bash
-PYTHONPATH=/tmp/xreactor-cache-standard:$PWD/src \
-  python examples/integration/cache/cache_functional_xreactor.py \
-  --seed 0x1234 --random-ops 300 --allow-known-bugs
-```
-
-设置 `CACHE_TRACE=1` 可打印每次 upstream response、memory request/response 和 MMIO
-request，便于保留最小复现。
-
-绕过 XReactor 的同步差分命令如下；它会在确认 overlap request 丢失时以 assertion
-失败：
-
-```bash
-PYTHONPATH=/tmp/xreactor-cache-standard:$PWD/../example/CacheSignalCFG:$PWD/src \
-  python examples/integration/cache/cache_direct_protocol_probe.py
-```
-
-## 尚未覆盖
-
-- coherence probe/release；
+- coherence probe/release（本轮已增加定向验证）；
 - `flush[0]` pipeline kill 的精确事务语义；
 - `flush[1]`，因为当前生成 RTL 明确带有“only allow to flush icache” fatal assertion；
 - 非 8-byte size、非对齐地址及非法命令的接口契约；
@@ -195,6 +290,6 @@ PYTHONPATH=/tmp/xreactor-cache-standard:$PWD/../example/CacheSignalCFG:$PWD/src 
 - 独立 simulator 差分和 waveform，用于把剩余缺陷进一步定位到 Cache RTL 还是
   Verilator wrapper。
 
-下一步优先级应是打开 waveform 定位这个 overlap 协议问题，再扩展 coherence、
+当时建议的下一步优先级是打开 waveform 定位这个 overlap 协议问题，再扩展 coherence、
 flush 和非法输入测试。修复后，当前 probe 应从“已知缺陷检测”转为普通 hard
 assertion。

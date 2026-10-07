@@ -31,6 +31,7 @@ fi
   --sdir "${PICKER_TEMPLATE_DIR}" \
   --autobuild true \
   --rw mem_direct \
+  --vpi \
   --coverage \
   -V "--no-timing" \
   -j "${BUILD_THREADS}"
