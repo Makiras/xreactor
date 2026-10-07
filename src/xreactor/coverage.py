@@ -8,13 +8,43 @@ from itertools import product
 import json
 from pathlib import Path
 from threading import RLock
-from types import MappingProxyType
+from types import MappingProxyType, SimpleNamespace
 from typing import Any, Iterable, Sequence
+from uuid import uuid4
 import warnings
+
+from .events import LogicValue
+from .ir import Next, Sequence as TemporalSequence, SignalExpr, Wait, _SequenceState, _advance_sequence
 
 
 SCHEMA_VERSION = 1
 Scalar = bool | int | str | None
+
+# Event counters are cumulative; peak is a maximum. Live progress is never merged.
+_DIAGNOSTIC_FIELDS = ("started", "completed", "failed", "expired", "aborted", "cleared", "peak_active")
+
+
+def _empty_pattern_diagnostics():
+    return dict.fromkeys((*_DIAGNOSTIC_FIELDS, "unfinished_at_close"), 0)
+
+
+def _merge_diagnostics(left, right):
+    if left is None:
+        return _json_value(right)
+    if right is None:
+        return _json_value(left)
+    result = {key: left[key] + right[key] for key in ("collected_runs", "uncollected_runs")}
+    patterns = {}
+    for item in (*left["patterns"], *right["patterns"]):
+        key = item["kind"], item.get("point"), item.get("bin")
+        if key not in patterns:
+            patterns[key] = dict(item)
+        else:
+            for field in (*_DIAGNOSTIC_FIELDS, "unfinished_at_close"):
+                a, b = patterns[key][field], item[field]
+                patterns[key][field] = max(a, b) if field == "peak_active" else a + b
+    result["patterns"] = list(patterns.values())
+    return result
 
 
 class BinKind(str, Enum):
@@ -190,7 +220,54 @@ class DefaultMatcher:
         return {"type": "default"}
 
 
-Matcher = ValueMatcher | RangeMatcher | WildcardMatcher | DefaultMatcher
+@dataclass(frozen=True, slots=True)
+class TransitionMatcher:
+    values: tuple[Scalar, ...]
+    overlap: bool = True
+    _program: Any = field(init=False, repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        values = tuple(_validate_scalar(value) for value in self.values)
+        if len(values) < 2:
+            raise CoverageSchemaError("transition requires at least two samples")
+        if not isinstance(self.overlap, bool):
+            raise CoverageSchemaError("transition overlap must be bool")
+        object.__setattr__(self, "values", values)
+        object.__setattr__(self, "_program", self.program(SignalExpr(("value",))))
+
+    def program(self, source: Any) -> Any:
+        return TemporalSequence(Wait(source == self.values[0]),
+                                *(Next(source == value) for value in self.values[1:]))
+
+    def advance(self, previous: tuple[_SequenceState, ...], value: Any, diagnostics=None
+                ) -> tuple[bool, tuple[_SequenceState, ...]]:
+        states = [replace(state) for state in previous]
+        if self.overlap or not states:
+            states.append(_SequenceState())
+        program = self._program
+        sample = SimpleNamespace(value=value)
+        remaining = []
+        hit = False
+        for index, state in enumerate(states):
+            new = index == len(previous)
+            done = _advance_sequence(program.steps, state,
+                                     lambda expr: bool(expr.evaluate(sample)))
+            if diagnostics is not None:
+                diagnostics["started"] += int(new and (done or state.index > 0))
+                diagnostics["completed"] += int(done)
+                diagnostics["failed"] += int(not new and state.failed)
+            hit |= done
+            if not done and not state.failed and state.index:
+                remaining.append(state)
+        if diagnostics is not None:
+            diagnostics["peak_active"] = max(diagnostics["peak_active"], len(remaining))
+        return hit, tuple(remaining)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"type": "transition", "values": list(self.values), "overlap": self.overlap}
+
+
+Matcher = ValueMatcher | RangeMatcher | WildcardMatcher | DefaultMatcher | TransitionMatcher
 
 
 def _matcher_from_dict(data: Mapping[str, Any]) -> Matcher:
@@ -203,6 +280,8 @@ def _matcher_from_dict(data: Mapping[str, Any]) -> Matcher:
         return WildcardMatcher(data["value"], data["mask"], data["width"])
     if kind == "default":
         return DefaultMatcher()
+    if kind == "transition":
+        return TransitionMatcher(tuple(data["values"]), data["overlap"])
     raise CoverageSchemaError(f"unknown matcher type {kind!r}")
 
 
@@ -239,6 +318,10 @@ class BinSpec:
 
 class Bin:
     """Serializable factories for hardware functional-coverage bins."""
+
+    @staticmethod
+    def transition(*values: Scalar, overlap: bool = True, at_least: int = 1) -> BinSpec:
+        return BinSpec(TransitionMatcher(tuple(values), overlap), at_least=at_least)
 
     @staticmethod
     def values(*values: Scalar, at_least: int = 1) -> BinSpec:
@@ -339,6 +422,10 @@ class Iff:
 
     def enabled(self, sample: Any) -> bool:
         value = _extract(sample, self._source_parts)
+        if isinstance(value, LogicValue):
+            if not value.is_known:
+                return False
+            value = value.as_int()
         if isinstance(value, Enum):
             value = value.value
         matched = value in self.values
@@ -414,6 +501,7 @@ class CoverPointDef:
     _ignore_bins: tuple[NamedBin, ...] = field(init=False, repr=False)
     _illegal_bins: tuple[NamedBin, ...] = field(init=False, repr=False)
     _default_bins: tuple[NamedBin, ...] = field(init=False, repr=False)
+    _excluded_bins: Mapping[str, str] = field(init=False, repr=False)
     _source_parts: tuple[str, ...] = field(init=False, repr=False)
     _normal_exact: Mapping[Scalar, tuple[str, ...]] = field(init=False, repr=False)
     _normal_dynamic: tuple[NamedBin, ...] = field(init=False, repr=False)
@@ -452,11 +540,16 @@ class CoverPointDef:
         object.__setattr__(self, "_named_bins", named)
         source = self.name if self.source is None else self.source
         object.__setattr__(self, "_source_parts", tuple(source.split(".")))
+        from ._coverage_exclusions import excluded_normal_bins
+        excluded = excluded_normal_bins(named)
+        object.__setattr__(self, "_excluded_bins", MappingProxyType(excluded))
         object.__setattr__(
             self,
             "_normal_bins",
-            tuple(item for item in named if item.spec.kind is BinKind.NORMAL),
+            tuple(item for item in named if item.spec.kind is BinKind.NORMAL and item.name not in excluded),
         )
+        if not self._normal_bins:
+            raise CoverageSchemaError(f"cover point {self.name!r} has no eligible normal bins after exclusions")
         object.__setattr__(
             self,
             "_ignore_bins",
@@ -636,7 +729,8 @@ class CoverGroupDef:
 
     def to_dict(self) -> dict[str, Any]:
         result = {
-            "version": SCHEMA_VERSION,
+            "version": 2 if any(isinstance(bin.spec.matcher, TransitionMatcher)
+                                for point in self.points for bin in point._named_bins) else SCHEMA_VERSION,
             "name": self.name,
             "iff": None if self.iff is None else self.iff.to_dict(),
             "goal": self.goal,
@@ -650,7 +744,7 @@ class CoverGroupDef:
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> "CoverGroupDef":
         version = data.get("version")
-        if version != SCHEMA_VERSION:
+        if version not in (1, 2):
             raise CoverageSchemaError(
                 f"unsupported coverage schema version {version!r}"
             )
@@ -668,8 +762,12 @@ class CoverGroupDef:
         instance: str,
         *,
         illegal_policy: IllegalPolicy | str = IllegalPolicy.RAISE,
+        run_id: str | None = None,
+        run_metadata: Mapping[str, Any] | None = None,
+        contract: str | None = None,
     ) -> "CoverGroup":
-        return CoverGroup(self, instance, illegal_policy=illegal_policy)
+        return CoverGroup(self, instance, illegal_policy=illegal_policy,
+                          run_id=run_id, run_metadata=run_metadata, contract=contract)
 
 
 def _validate_percentage(value: float, label: str) -> None:
@@ -698,40 +796,48 @@ def _resolve_cross(
         raise CoverageSchemaError(
             f"cross {cross.name!r} references unknown point {error.args[0]!r}"
         ) from error
-    allowed = tuple(product(*dimensions))
-    allowed_set = set(allowed)
+    declared = tuple({item.name for item in points[name]._named_bins
+                      if item.spec.kind is BinKind.NORMAL} for name in cross.points)
+    eligible_dimensions = tuple(set(names) for names in dimensions)
     if cross.include is None:
-        if len(allowed) > cross.max_auto_bins:
+        size = 1
+        for dimension in dimensions:
+            size *= len(dimension)
+        if size > cross.max_auto_bins:
             raise CoverageSchemaError(
-                f"cross {cross.name!r} would create {len(allowed)} bins, above "
+                f"cross {cross.name!r} would create {size} bins, above "
                 f"max_auto_bins={cross.max_auto_bins}; use explicit include"
             )
-        selected = allowed
+        selected = tuple(product(*dimensions))
     else:
         selected = cross.include
-    ignored = frozenset(cross.ignore)
     illegal = frozenset(cross.illegal)
+    ignored = frozenset(cross.ignore) - illegal
     for label, tuples in (
         ("include", selected),
         ("ignore", ignored),
         ("illegal", illegal),
     ):
         for item in tuples:
-            if len(item) != len(cross.points) or item not in allowed_set:
+            if len(item) != len(cross.points) or any(name not in allowed
+                                                    for name, allowed in zip(item, declared)):
                 raise CoverageSchemaError(
                     f"cross {cross.name!r} has invalid {label} tuple {item!r}"
                 )
     eligible = tuple(
         item for item in selected if item not in ignored and item not in illegal
+        and all(name in eligible for name, eligible in zip(item, eligible_dimensions))
     )
     if len(set(eligible)) != len(eligible):
         raise CoverageSchemaError(f"cross {cross.name!r} has duplicate include bins")
     if not eligible:
         raise CoverageSchemaError(f"cross {cross.name!r} has no eligible bins")
-    return _ResolvedCross(cross, eligible, frozenset(eligible), ignored, illegal)
+    return _ResolvedCross(cross, tuple(sorted(eligible)), frozenset(eligible), ignored, illegal)
 
 
 def _matcher_overlaps(left: Matcher, right: Matcher) -> bool:
+    if isinstance(left, TransitionMatcher) or isinstance(right, TransitionMatcher):
+        return False  # Temporal coexistence is intentional, not a static overlap.
     if isinstance(left, DefaultMatcher) or isinstance(right, DefaultMatcher):
         return False
     if isinstance(left, ValueMatcher):
@@ -790,6 +896,7 @@ def _match_compiled(
     exact: Mapping[Scalar, tuple[str, ...]],
     dynamic: Sequence[NamedBin],
     schema_order: Sequence[NamedBin],
+    temporal: frozenset[str] = frozenset(),
 ) -> tuple[str, ...]:
     if isinstance(value, Enum):
         value = value.value
@@ -800,7 +907,9 @@ def _match_compiled(
     if not dynamic:
         return matched
     dynamic_matches = tuple(
-        item.name for item in dynamic if item.spec.matcher.matches(value)
+        item.name for item in dynamic
+        if (item.name in temporal if isinstance(item.spec.matcher, TransitionMatcher)
+            else item.spec.matcher.matches(value))
     )
     selected = frozenset((*matched, *dynamic_matches))
     return tuple(item.name for item in schema_order if item.name in selected)
@@ -812,7 +921,9 @@ class _ItemStats:
     gated: int = 0
     ignored: int = 0
     unmatched: int = 0
+    unknown: int = 0
     counts: dict[str, int] = field(default_factory=dict)
+    provenance: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -820,7 +931,9 @@ class _ItemStats:
             "gated": self.gated,
             "ignored": self.ignored,
             "unmatched": self.unmatched,
+            "unknown": self.unknown,
             "counts": dict(sorted(self.counts.items())),
+            "provenance": _json_value(self.provenance),
         }
 
 
@@ -843,6 +956,7 @@ class _PointPlan:
     ignored: bool = False
     unmatched: bool = False
     illegal: tuple[str, ...] = ()
+    unknown: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -865,11 +979,20 @@ class CoverGroup:
         instance: str,
         *,
         illegal_policy: IllegalPolicy | str = IllegalPolicy.RAISE,
+        run_id: str | None = None,
+        run_metadata: Mapping[str, Any] | None = None,
+        contract: str | None = None,
     ) -> None:
         if not instance:
             raise ValueError("coverage instance name must not be empty")
         self.definition = definition
         self.instance = instance
+        for label, value in (("run_id", run_id), ("contract", contract)):
+            if value is not None and (not isinstance(value, str) or not value):
+                raise ValueError(f"{label} must be a nonempty string")
+        self._configured_run_id = run_id
+        self._run_metadata = _json_value(dict(run_metadata or {}))
+        self._new_origin()
         self.illegal_policy = IllegalPolicy(illegal_policy)
         self.samples = 0
         self.gated = 0
@@ -887,13 +1010,111 @@ class CoverGroup:
         }
         self._illegal_hits: list[IllegalHit] = []
         self._lock = RLock()
+        self._history: dict[tuple[str, str], tuple[_SequenceState, ...]] = {}
+        self._temporal_points = tuple(point for point in definition.points
+                                      if any(isinstance(item.spec.matcher, TransitionMatcher)
+                                             for item in point._named_bins))
+        self._binding: Any = None
+        self._collector: Any = None
+        self._sampling_contract: Any = (None if contract is None else
+                                        {"kind": "transaction", "name": contract})
+        self._diagnostics: Any = None
+        self._collection_complete = True
+
+    def _new_origin(self) -> None:
+        self._origin_id = uuid4().hex
+        self._origins = {self._origin_id: {
+            "run_id": self._configured_run_id or self._origin_id,
+            "instance": self.instance, "metadata": _json_value(self._run_metadata),
+            "explicit_run_id": self._configured_run_id is not None,
+        }}
+
+    def _record_hit(self, stats: _ItemStats, name: str, count: int,
+                    metadata: Mapping[str, Any] | None) -> None:
+        evidence = stats.provenance.setdefault(name, {})
+        meta = metadata
+        current = evidence.get(self._origin_id)
+        if current is None:
+            evidence[self._origin_id] = {"count": count, "first": meta, "last": meta}
+        else:
+            current["count"] += count
+            current["last"] = meta
+
+    def bind(self, *, trigger: Any, fields: Mapping[str, Any], abort: Any = None,
+             strategy: str = "auto", accumulate: bool = False,
+             contract: str | None = None, overlap: bool = False,
+             max_active: int | None = None, diagnostics: str = "off") -> "CoverGroup":
+        """Configure passive sampling; pass this instance to Execution(coverage=[...]).
+
+        Each execution starts new matching history. By default counters are also
+        reset; accumulate=True retains completed observations across executions.
+        """
+        from ._coverage_runtime import configure
+        with self._lock:
+            if self._collector is not None:
+                raise RuntimeError("cannot rebind active coverage")
+            self._binding = configure(trigger, fields, abort, strategy, accumulate, contract,
+                                      overlap, max_active, diagnostics)
+        return self
+
+    def _start(self, execution: Any) -> None:
+        from ._coverage_runtime import _Collector
+        with self._lock:
+            if self._collector is not None:
+                raise RuntimeError("coverage already belongs to an Execution")
+            if self._binding is None:
+                raise RuntimeError("Execution coverage must be bound before starting")
+            collector = _Collector(self, execution)
+            collector.start()
+            self._collector = collector
+
+    def _stop(self) -> None:
+        with self._lock:
+            collector = self._collector
+            if collector is not None:
+                try:
+                    collector.close()
+                finally:
+                    self._collector = None
+                    self._history.clear()
+
+    def sync(self) -> None:
+        """Refresh the Python counters from the current native cumulative snapshot."""
+        with self._lock:
+            if self._collector is not None:
+                self._collector.sync()
+
+    def clear_history(self) -> None:
+        """Discard incomplete patterns, retaining completed counts."""
+        with self._lock:
+            if self._collector is not None:
+                self._collector.reset(counters=False)
+            self._history.clear()
+
+    def inspect(self) -> dict[str, Any]:
+        """Read live pattern progress on demand without enabling a history log."""
+        with self._lock:
+            if self._collector is None:
+                raise RuntimeError("coverage inspection requires an active Execution")
+            return self._collector.inspect()
 
     def sample(
+        self, sample: Any, *, metadata: Mapping[str, Any] | None = None,
+        details: bool = True,
+    ) -> CoverageSample | None:
+        with self._lock:
+            if self._collector is not None or (self._sampling_contract is not None
+                                                and self._sampling_contract.get("kind") != "transaction"):
+                raise RuntimeError("cannot manually sample coverage with an Execution sampling contract")
+            return self._sample(sample, metadata=metadata, details=details)
+
+    def _sample(
         self,
         sample: Any,
         *,
         metadata: Mapping[str, Any] | None = None,
         details: bool = True,
+        diagnostics: Any = None,
     ) -> CoverageSample | None:
         """Atomically sample one transaction.
 
@@ -905,11 +1126,42 @@ class CoverGroup:
         with self._lock:
             if self.definition.iff is not None and not self.definition.iff.enabled(sample):
                 self.gated += 1
+                if diagnostics is not None:
+                    for key, states in self._history.items():
+                        diagnostics[key]["cleared"] += len(states)
+                self._history.clear()
                 if details:
                     return CoverageSample(self.instance, {}, {}, gated=True)
                 return None
 
-            point_plans = tuple(self._plan_point(point, sample) for point in self.definition.points)
+            history = {}
+            planned_diagnostics = ({key: dict(value) for key, value in diagnostics.items()}
+                                   if diagnostics is not None else None)
+            matches = {}
+            for point in self._temporal_points:
+                enabled = point.iff is None or point.iff.enabled(sample)
+                value = _extract(sample, point._source_parts) if enabled else None
+                if isinstance(value, LogicValue):
+                    enabled &= value.is_known
+                    if value.is_known:
+                        value = value.as_int()
+                selected = set()
+                for item in point._named_bins:
+                    matcher = item.spec.matcher
+                    if isinstance(matcher, TransitionMatcher):
+                        key = (point.name, item.name)
+                        stats = planned_diagnostics[key] if planned_diagnostics is not None else None
+                        previous = self._history.get(key, ())
+                        if not enabled and stats is not None:
+                            stats["cleared"] += len(previous)
+                        hit, states = (matcher.advance(previous, value, stats)
+                                       if enabled else (False, ()))
+                        history[key] = states
+                        if hit:
+                            selected.add(item.name)
+                matches[point.name] = frozenset(selected)
+            point_plans = tuple(self._plan_point(point, sample, matches.get(point.name, frozenset()))
+                                for point in self.definition.points)
             plan_by_name = {plan.point.name: plan for plan in point_plans}
             cross_plans = tuple(
                 self._plan_cross(cross, plan_by_name, sample)
@@ -931,7 +1183,7 @@ class CoverGroup:
                     IllegalHit(
                         self.instance,
                         plan.cross.definition.name,
-                        _tuple_key(item),
+                        _tuple_label(item),
                         item,
                         meta,
                     )
@@ -939,9 +1191,14 @@ class CoverGroup:
                 )
 
             # Commit only after all extraction and matching completed.
+            normal_metadata = None if metadata is None else _json_value(dict(metadata))
             self.samples += 1
+            self._history = history
+            if diagnostics is not None:
+                diagnostics.update(planned_diagnostics)
             for plan in point_plans:
                 stats = self._points[plan.point.name]
+                stats.unknown += int(plan.unknown)
                 if plan.gated:
                     stats.gated += 1
                     continue
@@ -950,6 +1207,8 @@ class CoverGroup:
                 stats.unmatched += int(plan.unmatched)
                 for name in plan.increments:
                     stats.counts[name] += 1
+                for name in plan.normal:
+                    self._record_hit(stats, name, 1, normal_metadata)
             for plan in cross_plans:
                 stats = self._crosses[plan.cross.definition.name]
                 if plan.gated:
@@ -960,6 +1219,8 @@ class CoverGroup:
                 stats.unmatched += plan.unmatched
                 for item in plan.increments:
                     stats.counts[_tuple_key(item)] += 1
+                for item in plan.normal:
+                    self._record_hit(stats, _tuple_key(item), 1, normal_metadata)
             self._illegal_hits.extend(illegal_hits)
 
             if illegal_hits and self.illegal_policy is IllegalPolicy.RAISE:
@@ -975,15 +1236,21 @@ class CoverGroup:
                 illegal_hits=tuple(illegal_hits),
             )
 
-    def _plan_point(self, point: CoverPointDef, sample: Any) -> _PointPlan:
+    def _plan_point(self, point: CoverPointDef, sample: Any,
+                    temporal: frozenset[str] = frozenset()) -> _PointPlan:
         if point.iff is not None and not point.iff.enabled(sample):
             return _PointPlan(point, None, gated=True)
         value = _extract(sample, point._source_parts)
+        if isinstance(value, LogicValue):
+            if not value.is_known:
+                return _PointPlan(point, value, gated=True, unknown=True)
+            value = value.as_int()
         illegal = _match_compiled(
             value,
             point._illegal_exact,
             point._illegal_dynamic,
             point._illegal_bins,
+            temporal,
         )
         if illegal:
             return _PointPlan(point, value, increments=illegal, illegal=illegal)
@@ -992,6 +1259,7 @@ class CoverGroup:
             point._ignore_exact,
             point._ignore_dynamic,
             point._ignore_bins,
+            temporal,
         )
         if ignored:
             return _PointPlan(point, value, increments=ignored, ignored=True)
@@ -1000,6 +1268,7 @@ class CoverGroup:
             point._normal_exact,
             point._normal_dynamic,
             point._normal_bins,
+            temporal,
         )
         if normal:
             return _PointPlan(point, value, increments=normal, normal=normal)
@@ -1046,10 +1315,12 @@ class CoverGroup:
 
     @property
     def illegal_hits(self) -> tuple[IllegalHit, ...]:
+        self.sync()
         with self._lock:
             return tuple(self._illegal_hits)
 
     def point_coverage(self, name: str) -> float:
+        self.sync()
         point = next((item for item in self.definition.points if item.name == name), None)
         if point is None:
             raise KeyError(name)
@@ -1062,6 +1333,7 @@ class CoverGroup:
             return covered * 100.0 / len(point.normal_bins)
 
     def cross_coverage(self, name: str) -> float:
+        self.sync()
         cross = next(
             (item for item in self.definition._resolved_crosses if item.definition.name == name),
             None,
@@ -1095,10 +1367,27 @@ class CoverGroup:
             return weighted / total_weight
 
     @property
-    def covered(self) -> bool:
+    def goal_met(self) -> bool:
+        """Whether the raw aggregate percentage meets the group goal."""
         return self.coverage + 1e-12 >= self.definition.goal
 
+    def _unmet_item_goals(self) -> tuple[str, ...]:
+        return tuple(
+            point.name for point in self.definition.points
+            if point.weight and self.point_coverage(point.name) + 1e-12 < point.goal
+        ) + tuple(
+            cross.name for cross in self.definition.crosses
+            if cross.weight and self.cross_coverage(cross.name) + 1e-12 < cross.goal
+        )
+
+    @property
+    def covered(self) -> bool:
+        """Coverage acceptance, including item goals, collection and illegal hits."""
+        return (self.goal_met and not self._unmet_item_goals()
+                and self._collection_complete and not self._illegal_hits)
+
     def uncovered(self) -> tuple[str, ...]:
+        self.sync()
         result: list[str] = []
         with self._lock:
             for point in self.definition.points:
@@ -1111,35 +1400,50 @@ class CoverGroup:
             for cross in self.definition._resolved_crosses:
                 stats = self._crosses[cross.definition.name]
                 result.extend(
-                    f"{cross.definition.name}.{_tuple_key(item)}"
+                    f"{cross.definition.name}.{_tuple_label(item)}"
                     for item in cross.eligible
                     if stats.counts[_tuple_key(item)] < cross.definition.at_least
                 )
         return tuple(result)
 
-    def assert_coverage(self, minimum: float | None = None) -> None:
+    def assert_coverage(self, minimum: float | None = None, *, per_item: bool = True) -> None:
         target = self.definition.goal if minimum is None else minimum
         _validate_percentage(target, "coverage minimum")
         actual = self.coverage
+        if not self._collection_complete:
+            raise AssertionError("coverage collection is incomplete")
+        if self._illegal_hits:
+            raise IllegalBinError(self._illegal_hits)
         if actual + 1e-12 < target:
             raise AssertionError(
                 f"coverage instance {self.instance!r} is {actual:.2f}%, below "
                 f"{target:.2f}%; uncovered bins: {', '.join(self.uncovered())}"
             )
-        if self._illegal_hits:
-            raise IllegalBinError(self._illegal_hits)
+        missing = self._unmet_item_goals() if per_item else ()
+        if missing:
+            raise AssertionError(f"coverage item goals not met: {', '.join(missing)}")
 
     def reset(self) -> None:
         with self._lock:
+            if self._collector is not None:
+                self._collector.reset(counters=True)
+            self._history.clear()
             self.samples = 0
             self.gated = 0
+            self._new_origin()
             for stats in (*self._points.values(), *self._crosses.values()):
-                stats.samples = stats.gated = stats.ignored = stats.unmatched = 0
+                stats.samples = stats.gated = stats.ignored = stats.unmatched = stats.unknown = 0
                 for name in stats.counts:
                     stats.counts[name] = 0
+                stats.provenance.clear()
             self._illegal_hits.clear()
+            self._collection_complete = True
+            self._diagnostics = None
+            if self._collector is not None:
+                self._collector.publish_diagnostics()
 
     def report(self) -> dict[str, Any]:
+        self.sync()
         with self._lock:
             points = []
             for point in self.definition.points:
@@ -1149,6 +1453,8 @@ class CoverGroup:
                     "name": point.name,
                     "coverage": self.point_coverage(point.name),
                     "goal": point.goal,
+                    "goal_met": self.point_coverage(point.name) + 1e-12 >= point.goal,
+                    "excluded_bins": dict(point._excluded_bins),
                 })
                 points.append(item)
             crosses = []
@@ -1159,9 +1465,20 @@ class CoverGroup:
                     "name": cross.definition.name,
                     "coverage": self.cross_coverage(cross.definition.name),
                     "goal": cross.definition.goal,
+                    "goal_met": self.cross_coverage(cross.definition.name) + 1e-12 >= cross.definition.goal,
+                    "bins": [
+                        {"id": _tuple_key(names), "tuple": list(names),
+                         "label": _tuple_label(names), "kind": kind,
+                         "at_least": cross.definition.at_least}
+                        for kind, tuples in (("normal", cross.eligible),
+                                             ("ignore", sorted(cross.ignored)),
+                                             ("illegal", sorted(cross.illegal)))
+                        for names in tuples
+                    ],
                 })
                 crosses.append(item)
-            return {
+            result = {
+                "report_version": 2,
                 "schema": self.definition.to_dict(),
                 "schema_digest": self.definition.digest,
                 "instance": self.instance,
@@ -1171,27 +1488,83 @@ class CoverGroup:
                 "coverage": self.coverage,
                 "goal": self.definition.goal,
                 "covered": self.covered,
+                "goal_met": self.goal_met,
+                "items_goal_met": not self._unmet_item_goals(),
+                "has_illegal": bool(self._illegal_hits),
                 "points": points,
                 "crosses": crosses,
                 "illegal_hits": [item.to_dict() for item in self._illegal_hits],
+                "sampling_contract": _json_value(self._sampling_contract),
+                "sampling_backend": getattr(self, "_sampling_backend", "manual"),
+                "sampling_fallback": getattr(self, "_sampling_fallback", None),
+                "diagnostics": _json_value(self._diagnostics),
+                "collection_complete": self._collection_complete,
+                "origins": _json_value(self._origins),
+                "active_origin": self._origin_id,
             }
+            result["snapshot_id"] = sha256(json.dumps(result, sort_keys=True,
+                                                       separators=(",", ":")).encode()).hexdigest()
+            return result
 
     @classmethod
     def from_report(cls, report: Mapping[str, Any]) -> "CoverGroup":
+        if report.get("report_version") != 2:
+            raise CoverageMergeError("unsupported coverage report version")
+        payload = {key: value for key, value in report.items() if key != "snapshot_id"}
+        digest = sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+        if digest != report.get("snapshot_id"):
+            raise CoverageMergeError("coverage snapshot digest is invalid")
         definition = CoverGroupDef.from_dict(report["schema"])
         if definition.digest != report["schema_digest"]:
             raise CoverageMergeError("coverage report schema digest is invalid")
+        ordered = {}
+        for kind, definitions in (("points", definition.points), ("crosses", definition.crosses)):
+            expected = {item.name: item for item in definitions}
+            names = [item["name"] for item in report[kind]]
+            if len(names) != len(set(names)) or set(names) != set(expected):
+                raise CoverageMergeError("coverage report items do not match schema")
+            ordered[kind] = tuple(expected[name] for name in names)
+        definition = replace(definition, **ordered)
         group = cls(
             definition,
             report["instance"],
             illegal_policy=report.get("illegal_policy", "raise"),
         )
         group.samples = report["samples"]
+        group._sampling_contract = _json_value(report.get("sampling_contract"))
+        group._sampling_backend = report.get("sampling_backend", "manual")
+        group._sampling_fallback = report.get("sampling_fallback")
+        group._diagnostics = _json_value(report.get("diagnostics"))
+        group._collection_complete = report.get("collection_complete", True)
         group.gated = report["gated"]
+        group._origins = _json_value(report["origins"])
+        group._origin_id = report["active_origin"]
+        if group._origin_id not in group._origins:
+            raise CoverageMergeError("coverage active origin is invalid")
+        for origin in group._origins.values():
+            if not isinstance(origin.get("run_id"), str) or not origin["run_id"]:
+                raise CoverageMergeError("coverage run identity is invalid")
+        active = group._origins[group._origin_id]
+        group._configured_run_id = active.get("run_id") if active.get("explicit_run_id") else None
+        group._run_metadata = active.get("metadata", {})
         for item in report["points"]:
             group._restore_stats(group._points[item["name"]], item)
         for item in report["crosses"]:
             group._restore_stats(group._crosses[item["name"]], item)
+        counters = [group.samples, group.gated]
+        for stats in (*group._points.values(), *group._crosses.values()):
+            counters.extend((stats.samples, stats.gated, stats.ignored, stats.unmatched, stats.unknown))
+            counters.extend(stats.counts.values())
+            for name, evidence in stats.provenance.items():
+                if name not in stats.counts or not set(evidence).issubset(group._origins):
+                    raise CoverageMergeError("coverage evidence identity does not match counters/origins")
+                counts = [record["count"] for record in evidence.values()]
+                if any(type(count) is not int or count <= 0 for count in counts):
+                    raise CoverageMergeError("coverage evidence counts must be positive integers")
+                if sum(counts) > stats.counts[name]:
+                    raise CoverageMergeError("coverage evidence exceeds bin hit count")
+        if any(type(count) is not int or count < 0 for count in counters):
+            raise CoverageMergeError("coverage counters must be nonnegative integers")
         group._illegal_hits = [
             IllegalHit(
                 item["group"],
@@ -1212,10 +1585,17 @@ class CoverGroup:
         stats.gated = data["gated"]
         stats.ignored = data["ignored"]
         stats.unmatched = data["unmatched"]
-        stats.counts.update({name: int(value) for name, value in data["counts"].items()})
+        stats.unknown = data.get("unknown", 0)
+        stats.counts.update(data["counts"])
+        stats.provenance = _json_value(data.get("provenance", {}))
 
     def merge(self, other: "CoverGroup", *, require_instance: bool = True) -> None:
         snapshot = other.report()
+        with self._lock:
+            self._validate_merge(snapshot, require_instance=require_instance)
+            self._merge_snapshot(snapshot)
+
+    def _validate_merge(self, snapshot: Mapping[str, Any], *, require_instance: bool = True) -> None:
         if self.definition.digest != snapshot["schema_digest"]:
             raise CoverageMergeError(
                 f"schema mismatch merging {self.instance!r} and {snapshot['instance']!r}"
@@ -1224,8 +1604,29 @@ class CoverGroup:
             raise CoverageMergeError(
                 f"instance mismatch {self.instance!r} != {snapshot['instance']!r}"
             )
+        if self._collector is not None:
+            raise CoverageMergeError("cannot merge into active coverage")
+        if self._sampling_contract != snapshot.get("sampling_contract"):
+            raise CoverageMergeError("coverage sampling contract mismatch")
+        incoming = snapshot.get("origins", {})
+        if not self._origins or not incoming:
+            raise CoverageMergeError("coverage run identity is missing")
+        existing_runs = {(origin["instance"], origin["run_id"]) for origin in self._origins.values()}
+        incoming_runs = {(origin["instance"], origin["run_id"]) for origin in incoming.values()}
+        if set(self._origins) & set(incoming) or existing_runs & incoming_runs:
+            raise CoverageMergeError("duplicate or overlapping coverage run/snapshot")
+
+    def _merge_snapshot(self, snapshot: Mapping[str, Any]) -> None:
         with self._lock:
+            self._origins.update(_json_value(snapshot["origins"]))
+            if getattr(self, "_sampling_backend", "manual") != snapshot.get("sampling_backend", "manual"):
+                self._sampling_backend = "mixed"
+            reasons = {reason for reason in (getattr(self, "_sampling_fallback", None),
+                                              snapshot.get("sampling_fallback")) if reason}
+            self._sampling_fallback = "; ".join(sorted(reasons)) or None
             self.samples += snapshot["samples"]
+            self._diagnostics = _merge_diagnostics(self._diagnostics, snapshot.get("diagnostics"))
+            self._collection_complete &= snapshot.get("collection_complete", True)
             self.gated += snapshot["gated"]
             for item in snapshot["points"]:
                 _add_stats(self._points[item["name"]], item)
@@ -1247,11 +1648,18 @@ def _add_stats(stats: _ItemStats, data: Mapping[str, Any]) -> None:
     stats.gated += data["gated"]
     stats.ignored += data["ignored"]
     stats.unmatched += data["unmatched"]
+    stats.unknown += data.get("unknown", 0)
     for name, count in data["counts"].items():
         stats.counts[name] += count
+    for name, evidence in data.get("provenance", {}).items():
+        stats.provenance.setdefault(name, {}).update(_json_value(evidence))
 
 
 def _tuple_key(item: tuple[str, ...]) -> str:
+    return json.dumps(item, ensure_ascii=False, separators=(",", ":"))
+
+
+def _tuple_label(item: tuple[str, ...]) -> str:
     return " × ".join(item)
 
 
@@ -1287,9 +1695,14 @@ class CoverageDatabase:
     def merge(self, other: "CoverageDatabase") -> None:
         incoming = other.report()["groups"]
         with self._lock:
+            prepared = []
             for item in incoming:
                 instance = item["instance"]
                 group = CoverGroup.from_report(item)
+                if instance in self._groups:
+                    self._groups[instance]._validate_merge(item)
+                prepared.append((instance, group))
+            for instance, group in prepared:
                 if instance in self._groups:
                     self._groups[instance].merge(group)
                 else:
@@ -1311,8 +1724,9 @@ class CoverageDatabase:
         with self._lock:
             return {
                 "format": "xreactor-functional-coverage",
-                "version": 1,
+                "version": 2,
                 "coverage": self.coverage,
+                "covered": bool(self._groups) and all(group.covered for group in self._groups.values()),
                 "groups": [group.report() for group in self._groups.values()],
             }
 
@@ -1327,7 +1741,7 @@ class CoverageDatabase:
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> "CoverageDatabase":
-        if data.get("format") != "xreactor-functional-coverage" or data.get("version") != 1:
+        if data.get("format") != "xreactor-functional-coverage" or data.get("version") != 2:
             raise CoverageMergeError("unsupported functional coverage database format")
         return cls(CoverGroup.from_report(item) for item in data["groups"])
 

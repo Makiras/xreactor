@@ -49,15 +49,26 @@ function progress(value){const bar=node("div",undefined,"bar"),fill=node("i");
   if(value<70)fill.className="bad";else if(value<90)fill.className="warn";bar.append(fill);return bar;}
 function card(label,value,detail,coverage){const c=node("div",undefined,"card");c.append(node("div",label,"subtitle"),
   node("div",value,"metric"),node("div",detail||"","note"));if(coverage!==undefined)c.append(progress(coverage));return c;}
-function coverageTable(items,kind,schemas){const table=node("table"),head=node("tr");
+function coverageTable(items,kind,schemas,origins){const table=node("table"),head=node("tr");
   ["Name","Meaning","Coverage","Samples","Bins (hit count)"].forEach(x=>head.append(node("th",x)));table.append(head);
   for(const item of items){const row=node("tr"),schema=(schemas||[]).find(x=>x.name===item.name)||{};
     const atLeast=kind==="cross"?(schema.at_least||1):null;row.append(node("td",item.name),node("td",schema.description||"—"));
     const cov=node("td",pct(item.coverage),item.coverage>=item.goal?"ok":"miss");cov.append(progress(item.coverage));row.append(cov);
     row.append(node("td",String(item.samples)));const bins=node("td");
-    for(const [name,count] of Object.entries(item.counts||{})){let threshold=atLeast||1;
-      if(kind==="point"){const b=(schema.bins||[]).find(x=>x.name===name);threshold=b?.at_least||1;}
-      bins.append(node("span",`${name}: ${count}`,`pill ${count>=threshold?"ok":"miss"}`));}row.append(bins);table.append(row);}
+    for(const [id,count] of Object.entries(item.counts||{})){let threshold=atLeast||1;
+      const b=kind==="point"?(schema.bins||[]).find(x=>x.name===id):(item.bins||[]).find(x=>x.id===id);
+      const binKind=item.excluded_bins?.[id]?"excluded":(b?.kind||"normal");
+      threshold=b?.at_least||threshold;
+      const state=binKind==="normal"?(count>=threshold?"ok":"miss"):(binKind==="illegal"&&count?"miss":"note");
+      const label=b?.label||id;
+      const pill=node("span",`${label}: ${count} (${binKind})`,`pill ${state}`);
+      if(b?.tuple)pill.title=JSON.stringify(b.tuple);bins.append(pill);
+      const evidence=item.provenance?.[id];
+      if(evidence){const extra=node("details");extra.append(node("summary",`Run evidence: ${label}`));
+        for(const [originId,record] of Object.entries(evidence)){const origin=origins?.[originId]||{};
+          extra.append(node("pre",JSON.stringify({run:origin.run_id||originId,metadata:origin.metadata||{},...record},null,2)));}
+        bins.append(extra);}
+    }row.append(bins);table.append(row);}
   return table;}
 byId("title").textContent=report.title;byId("generated").textContent=`Generated ${report.generated_at}`;
 const summary=byId("summary");
@@ -70,9 +81,22 @@ if(!report.functional){fbody.append(node("p","No functional coverage input.","no
 else for(const group of report.functional.groups){const d=node("details");d.open=true;
   d.append(node("summary",`${group.instance} — ${pct(group.coverage)} (${group.samples} samples)`));
   d.append(node("p",group.schema?.description||"No covergroup description provided.",group.schema?.description?"":"note"));
+  d.append(node("p",`Sampling: ${group.sampling_backend||"manual"}${group.sampling_fallback?" · "+group.sampling_fallback:""}`,"note"));
+  d.append(node("p",`Coverage acceptance: ${group.covered?"accepted":"not accepted"}. Group goal: ${group.goal_met?"met":"not met"}; item goals: ${group.items_goal_met?"met":"not met"}.`,group.covered?"ok":"miss"));
   if((group.illegal_hits||[]).length)d.append(node("p",`${group.illegal_hits.length} illegal hit(s)`,"miss"));
-  d.append(node("h3","Coverpoints"),coverageTable(group.points,"point",group.schema?.points));
-  if(group.crosses.length)d.append(node("h3","Crosses"),coverageTable(group.crosses,"cross",group.schema?.crosses));fbody.append(d);}
+  if(group.collection_complete===false)d.append(node("p","Coverage collection is incomplete.","miss"));
+  const diagnostics=group.diagnostics;
+  if(diagnostics?.collected_runs){const extra=node("details");
+    extra.append(node("summary","Pattern diagnostics (optional)"),node("p",
+      `Collected in ${diagnostics.collected_runs} run(s); not collected in ${diagnostics.uncollected_runs} run(s). These counters do not contribute to coverage percentages.`,"note"));
+    const table=node("table"),head=node("tr"),fields=["started","completed","failed","expired","aborted","cleared","unfinished_at_close","peak_active"];
+    ["Pattern",...fields].forEach(x=>head.append(node("th",x.replaceAll("_"," "))));table.append(head);
+    for(const pattern of diagnostics.patterns){const row=node("tr");
+      row.append(node("td",pattern.kind==="trigger"?"Sampling trigger":`${pattern.point}.${pattern.bin}`));
+      fields.forEach(x=>row.append(node("td",String(pattern[x]))));table.append(row);}
+    extra.append(table);d.append(extra);}
+  d.append(node("h3","Coverpoints"),coverageTable(group.points,"point",group.schema?.points,group.origins));
+  if(group.crosses.length)d.append(node("h3","Crosses"),coverageTable(group.crosses,"cross",group.schema?.crosses,group.origins));fbody.append(d);}
 const lbody=byId("line-body");
 if(!report.line_coverage.length)lbody.append(node("p","No line coverage input.","note"));
 else for(const provider of report.line_coverage){const d=node("details");d.open=true;

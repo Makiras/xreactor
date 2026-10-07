@@ -20,6 +20,7 @@ from xreactor.ir import BinaryExpr, ConstantExpr, SignalExpr, UnaryExpr
     ({"max_settle_rounds": 0}, "positive"),
     ({"default_sample": object()}, "default_sample"),
     ({"agents": [object()]}, "Agent"),
+    ({"coverage": [object()]}, "CoverGroup"),
 ])
 def test_execution_rejects_invalid_configuration(kwargs, message):
     with pytest.raises((TypeError, ValueError), match=message):

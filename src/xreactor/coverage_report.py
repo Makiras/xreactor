@@ -278,12 +278,37 @@ def _functional_group_page(group: Mapping[str, Any]) -> str:
         _metric("Coverage", f"{group['coverage']:.2f}%", f"goal {group['goal']:.2f}%", group["coverage"]),
         _metric("Samples", str(group["samples"]), f"gated {group['gated']}"),
         _metric("Schema digest", group["schema_digest"][:12], schema["name"]),
+        _metric("Sampling", group.get("sampling_backend", "manual"),
+                group.get("sampling_fallback") or ""),
         "</div>",
         '<p class="muted">Select a point or cross to inspect bins, matchers, thresholds and diagnostics.</p>',
     ]
+    state = "accepted" if group["covered"] else "not accepted"
+    parts.append(f'<p class="{ "good" if group["covered"] else "bad"}">'
+                 f'Coverage acceptance: {state}. Group goal: '
+                 f'{"met" if group.get("goal_met") else "not met"}; item goals: '
+                 f'{"met" if group.get("items_goal_met") else "not met"}.</p>')
     illegal_hits = group.get("illegal_hits", ())
     if illegal_hits:
         parts.append(f'<div class="alert bad">{len(illegal_hits)} illegal hit(s)</div>')
+    if not group.get("collection_complete", True):
+        parts.append('<div class="alert bad">Coverage collection is incomplete.</div>')
+    diagnostics = group.get("diagnostics")
+    if diagnostics and diagnostics["collected_runs"]:
+        parts.append('<details><summary>Pattern diagnostics (optional)</summary>')
+        parts.append(f'<p>Collected in {diagnostics["collected_runs"]} run(s); '
+                     f'not collected in {diagnostics["uncollected_runs"]} run(s). '
+                     'These counters do not contribute to coverage percentages.</p>')
+        fields = ("started", "completed", "failed", "expired", "aborted", "cleared",
+                  "unfinished_at_close", "peak_active")
+        parts.append('<table><thead><tr><th>Pattern</th>' + ''.join(
+            f'<th>{name.replace("_", " ").title()}</th>' for name in fields) + '</tr></thead><tbody>')
+        for pattern in diagnostics["patterns"]:
+            name = ('Sampling trigger' if pattern["kind"] == "trigger" else
+                    f'{pattern["point"]}.{pattern["bin"]}')
+            parts.append(f'<tr><td>{_escape_html(name)}</td>' + ''.join(
+                f'<td>{pattern[field]}</td>' for field in fields) + '</tr>')
+        parts.append('</tbody></table></details>')
 
     for heading, items, directory in (
         ("Coverpoints", group["points"], "points"),
@@ -296,7 +321,7 @@ def _functional_group_page(group: Mapping[str, Any]) -> str:
         parts.append(f"<h2>{heading}</h2>")
         parts.append(
             '<table><thead><tr><th>Name</th><th>Meaning</th><th>Coverage</th><th>Samples</th>'
-            '<th>Gated</th><th>Ignored</th><th>Unmatched</th></tr></thead><tbody>'
+            '<th>Gated</th><th>Ignored</th><th>Unmatched</th><th>Unknown</th></tr></thead><tbody>'
         )
         for item in items:
             state = "good" if item["coverage"] + 1e-12 >= item["goal"] else "bad"
@@ -307,7 +332,8 @@ def _functional_group_page(group: Mapping[str, Any]) -> str:
                 f'<td>{_escape_html(meaning) if meaning else "—"}</td>'
                 f'<td class="{state}">{item["coverage"]:.2f}%</td>'
                 f'<td>{item["samples"]}</td><td>{item["gated"]}</td>'
-                f'<td>{item["ignored"]}</td><td>{item["unmatched"]}</td></tr>'
+                f'<td>{item["ignored"]}</td><td>{item["unmatched"]}</td>'
+                f'<td>{item.get("unknown", 0)}</td></tr>'
             )
         parts.append("</tbody></table>")
     return "".join(parts)
@@ -318,6 +344,7 @@ def _functional_item_page(
     definition: Mapping[str, Any],
     *,
     kind: str,
+    origins: Mapping[str, Any] | None = None,
 ) -> str:
     description = definition.get("description", "")
     parts = [
@@ -330,41 +357,49 @@ def _functional_item_page(
         '<div class="grid">',
         _metric("Coverage", f"{item['coverage']:.2f}%", f"goal {item['goal']:.2f}%", item["coverage"]),
         _metric("Samples", str(item["samples"]), f"gated {item['gated']}"),
-        _metric("Diagnostics", str(item["unmatched"]), f"unmatched · ignored {item['ignored']}"),
+        _metric("Diagnostics", str(item["unmatched"]),
+                f"unmatched · ignored {item['ignored']} · unknown {item.get('unknown', 0)}"),
         "</div>",
     ]
     if kind == "point":
         rows = [
             (
                 bin_["name"],
-                bin_["kind"],
+                "excluded" if bin_["name"] in item.get("excluded_bins", {}) else bin_["kind"],
                 item["counts"].get(bin_["name"], 0),
                 bin_["at_least"],
                 json.dumps(bin_["matcher"], ensure_ascii=False, sort_keys=True),
+                bin_["name"],
             )
             for bin_ in definition["bins"]
         ]
     else:
         at_least = definition["at_least"]
-        rows = [
-            (name, "cross", count, at_least, " × ".join(definition["points"]))
-            for name, count in item["counts"].items()
-        ]
+        rows = [(bin_["label"], bin_["kind"], item["counts"][bin_["id"]], at_least,
+                 json.dumps(bin_["tuple"], ensure_ascii=False), bin_["id"])
+                for bin_ in item.get("bins", ())]
     parts.append(
         '<table><thead><tr><th>Bin</th><th>Kind</th><th>Hits</th>'
-        '<th>at_least</th><th>Status</th><th>Matcher / definition</th></tr></thead><tbody>'
+        '<th>at_least</th><th>Status</th><th>Matcher / definition</th><th>Run evidence</th></tr></thead><tbody>'
     )
-    for name, bin_kind, count, at_least, description in rows:
+    for name, bin_kind, count, at_least, description, identity in rows:
         covered = count >= at_least
-        status = bin_kind if bin_kind in ("ignore", "illegal") else (
+        status = bin_kind if bin_kind in ("ignore", "illegal", "default", "excluded") else (
             "covered" if covered else "uncovered"
         )
-        status_class = "good" if covered and bin_kind != "illegal" else "bad"
+        status_class = ("good" if covered else "bad") if bin_kind == "normal" else (
+            "bad" if bin_kind == "illegal" and count else "muted")
+        evidence = []
+        for origin_id, record in item.get("provenance", {}).get(identity, {}).items():
+            origin = (origins or {}).get(origin_id, {})
+            evidence.append(json.dumps({"run": origin.get("run_id", origin_id),
+                                        "metadata": origin.get("metadata", {}), **record}, ensure_ascii=False))
+        proof = "<br>".join(_escape_html(value) for value in evidence) or "—"
         parts.append(
             f"<tr><td><code>{_escape_html(name)}</code></td>"
             f"<td>{_escape_html(bin_kind)}</td><td>{count}</td><td>{at_least}</td>"
             f'<td class="{status_class}">{status}</td>'
-            f"<td><code>{_escape_html(description)}</code></td></tr>"
+            f"<td><code>{_escape_html(description)}</code></td><td>{proof}</td></tr>"
         )
     parts.append("</tbody></table>")
     return "".join(parts)
@@ -415,7 +450,7 @@ def generate_unified_coverage_site(
                     group_root / "points" / f'{_site_slug(item["name"])}.html',
                     f'{group["instance"]} · point · {item["name"]}',
                     _functional_item_page(
-                        item, point_schema[item["name"]], kind="point"
+                        item, point_schema[item["name"]], kind="point", origins=group.get("origins")
                     ),
                     root_prefix="../../../../",
                 )
@@ -424,7 +459,7 @@ def generate_unified_coverage_site(
                     group_root / "crosses" / f'{_site_slug(item["name"])}.html',
                     f'{group["instance"]} · cross · {item["name"]}',
                     _functional_item_page(
-                        item, cross_schema[item["name"]], kind="cross"
+                        item, cross_schema[item["name"]], kind="cross", origins=group.get("origins")
                     ),
                     root_prefix="../../../../",
                 )
@@ -493,14 +528,8 @@ def generate_unified_coverage_site(
             "0",
             "--quiet",
         ]
-        absolute_sources = [
-            item["path"] for item in report["files"] if Path(item["path"]).is_absolute()
-        ]
-        if absolute_sources:
-            common = Path(os.path.commonpath(absolute_sources))
-            if not common.is_dir():
-                common = common.parent
-            command.extend(("--prefix", str(common)))
+        # Let genhtml determine its source prefix. Stripping the entire parent
+        # directory breaks source lookup for a single file in LCOV 2.0.
         try:
             subprocess.run(command, check=True, text=True, capture_output=True)
         except FileNotFoundError as error:
@@ -541,8 +570,9 @@ def generate_unified_coverage_site(
     )
 
     overview = (
-        '<p class="alert warn">Functional and RTL line coverage are independent metrics; '
-        'they are deliberately not averaged.</p><div class="grid">'
+        '<p class="alert warn">Functional coverage and RTL line coverage are independent '
+        'metrics; they are deliberately not averaged.</p>'
+        '<div class="grid">'
         + "".join((*functional_cards, *line_cards))
         + '</div><h2>How to investigate</h2><ol><li>Open Functional and select a '
         'covergroup instance to inspect uncovered bins and thresholds.</li><li>Open RTL line, '

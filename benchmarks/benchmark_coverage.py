@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 from dataclasses import dataclass
 import gc
 import json
@@ -10,8 +11,14 @@ import platform
 import statistics
 import time
 from typing import Callable
+from types import SimpleNamespace
 
-from xreactor import Bin, CoverGroupDef, CoverPointDef, CrossDef
+from xreactor import Bin, CoverGroupDef, CoverPointDef, CrossDef, RisingEdge, Sequence, Wait, Within, xtrigger
+
+
+@xtrigger(sample=RisingEdge("clock"))
+def overlapping_pattern(dut):
+    return Sequence(Wait(dut.state == 1), Within(3, 3, dut.state == 1))
 
 
 @dataclass(frozen=True, slots=True)
@@ -99,11 +106,76 @@ def _measure(operation: Callable[[int], int], iterations: int, repeats: int) -> 
     }
 
 
+def measure_native(cycles: int, repeats: int) -> dict:
+    import xspcomm
+    from xreactor import ClockCycles, Execution, RisingEdge, XCommClockBackend
+
+    async def run(mode):
+        clock = xspcomm.XClock(lambda _: 0)
+        backend = XCommClockBackend(clock)
+        state = xspcomm.XData(8, xspcomm.XData.InOut)
+        state.Set(1)
+        bins = {"busy": Bin.values(1)}
+        if mode == "native_transition":
+            bins["held"] = Bin.transition(1, 1, 1)
+        group = CoverGroupDef("native_bench", (CoverPointDef("state", bins),)).instantiate("dut")
+        overlap = mode in ("native_overlap", "native_overlap_summary")
+        trigger = (overlapping_pattern(SimpleNamespace(clock=clock, state=state))
+                   if overlap else RisingEdge(clock))
+        group.bind(trigger=trigger, fields={"state": state},
+                   strategy="python" if mode == "python" else "native",
+                   overlap=overlap, max_active=8 if overlap else None,
+                   diagnostics="summary" if mode == "native_overlap_summary" else "off")
+        returns = 0
+        original = backend.run_until
+        def counted(limit):
+            nonlocal returns
+            result = original(limit)
+            returns += 1
+            return result
+        backend.run_until = counted
+        started = time.perf_counter_ns()
+        try:
+            async with Execution(backend, coverage=[] if mode == "baseline" else [group],
+                                 max_batch_ticks=2 * cycles, quantum_ms=60_000):
+                await ClockCycles(clock, cycles)
+            elapsed = time.perf_counter_ns() - started
+            if mode != "baseline":
+                expected = cycles - 3 if overlap else cycles
+                assert group.samples == expected
+                assert group.report()["points"][0]["counts"]["busy"] == expected
+            if mode == "native_overlap_summary":
+                summary = group.report()["diagnostics"]["patterns"][0]
+                assert summary["started"] == cycles
+                assert summary["completed"] == cycles - 3
+                assert summary["peak_active"] == summary["unfinished_at_close"] == 3
+            if mode == "native_transition":
+                assert group.report()["points"][0]["counts"]["held"] == cycles - 2
+            if mode != "python":
+                assert returns == 1, "coverage caused extra RunUntil returns"
+            return elapsed, returns
+        finally:
+            backend.close()
+
+    modes = ("baseline", "python", "native_static", "native_transition",
+             "native_overlap", "native_overlap_summary")
+    measurements = {mode: [] for mode in modes}
+    for _ in range(repeats):
+        for mode in modes:
+            measurements[mode].append(asyncio.run(run(mode)))
+    return {mode: {"samples_ns": [time for time, _ in samples],
+                   "ns_per_cycle": statistics.median(time for time, _ in samples) / cycles,
+                   "run_until_returns": [count for _, count in samples]}
+            for mode, samples in measurements.items()}
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--iterations", type=int, default=100_000)
     parser.add_argument("--repeats", type=int, default=5)
     parser.add_argument("--json", action="store_true")
+    parser.add_argument("--native", action="store_true",
+                        help="compare passive native and Python cycle sampling")
     parser.add_argument(
         "--max-fast-ns",
         type=float,
@@ -112,6 +184,12 @@ def main() -> int:
     args = parser.parse_args()
     if args.iterations <= 0 or args.repeats <= 0:
         parser.error("iterations and repeats must be positive")
+    if args.native:
+        if args.iterations < 4:
+            parser.error("native pattern benchmark requires at least 4 cycles")
+        print(json.dumps({"cycles": args.iterations, "repeats": args.repeats,
+                          "results": measure_native(args.iterations, args.repeats)}, indent=2))
+        return 0
 
     results = {
         "transaction_access_baseline": _measure(_baseline, args.iterations, args.repeats),

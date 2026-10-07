@@ -28,6 +28,7 @@ class Execution:
         backend: SimulationBackend,
         *,
         agents: Iterable[Agent[Any]] = (),
+        coverage: Iterable[Any] = (),
         default_sample: PhaseTrigger | None = None,
         max_batch_ticks: int = 4096,
         quantum_ms: float = 10.0,
@@ -69,6 +70,13 @@ class Execution:
                 or len({id(component) for component in owned}) != len(owned)):
             raise ValueError("Execution agents must own distinct components")
         self._started_agents: list[Agent[Any]] = []
+        from .coverage import CoverGroup
+        self._coverage = tuple(coverage)
+        if any(not isinstance(group, CoverGroup) for group in self._coverage):
+            raise TypeError("Execution coverage must contain CoverGroup instances")
+        if len({id(group) for group in self._coverage}) != len(self._coverage):
+            raise ValueError("Execution coverage must contain distinct instances")
+        self._started_coverage: list[Any] = []
         self.default_sample = default_sample
         self.max_batch_ticks = max_batch_ticks
         self.quantum_ms = quantum_ms
@@ -97,6 +105,9 @@ class Execution:
             self._context_token = bind_reactor(self.reactor)
             self._domain_token = current_domain.set(self._domain)
             self._delivery_context = copy_context()
+            for group in self._coverage:
+                group._start(self)
+                self._started_coverage.append(group)
             pump_context = copy_context()
             pump_context.run(current_domain.set, None)
             pump = self._run_pump()
@@ -140,6 +151,13 @@ class Execution:
                 await self._pump_task
         except BaseException as error:
             errors.append(error)
+        # Advancement has stopped. Synchronize while the native backend and
+        # registrations are alive, then release every collector even on error.
+        while self._started_coverage:
+            try:
+                self._started_coverage.pop()._stop()
+            except BaseException as error:
+                errors.append(error)
         try:
             if self.reactor is not None:
                 await self.reactor.aclose()
@@ -255,7 +273,8 @@ class Execution:
                 self.reactor.raise_background_error()
                 if (
                     result.stopped_phase is XPhase.FALLING_STABLE
-                    and self.reactor.has_drive_stable_work
+                    and (self.reactor.has_drive_stable_work
+                         or getattr(self.backend, "has_coverage_drive_work", False))
                 ):
                     self._delivery_context.run(self._sample_drive)
                     await asyncio.sleep(0)

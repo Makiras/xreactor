@@ -6,9 +6,11 @@ from pathlib import Path
 import tempfile
 import unittest
 import warnings
+import pytest
 
 from xreactor import (
     Bin,
+    CoverGroup,
     CoverageDatabase,
     CoverageMergeError,
     CoverageSchemaError,
@@ -60,6 +62,7 @@ class FunctionalCoverageTests(unittest.TestCase):
                 CoverPointDef(
                     "value",
                     {
+                        "valid": Bin.values(0),
                         "normal": Bin.values(3),
                         "ignored": Bin.ignore(Bin.values(3)),
                         "illegal": Bin.illegal(Bin.values(3)),
@@ -141,6 +144,45 @@ class FunctionalCoverageTests(unittest.TestCase):
         self.assertEqual(report["samples"], 1)
         self.assertEqual(report["points"][0]["gated"], 1)
         self.assertEqual(report["points"][0]["samples"], 0)
+
+    def test_cross_gate_counts_only_eligible_samples(self) -> None:
+        group = CoverGroupDef(
+            "cross_gate",
+            (CoverPointDef("a", {"one": Bin.values(1)}),
+             CoverPointDef("b", {"one": Bin.values(1)})),
+            (CrossDef("ab", ("a", "b"), iff=Iff.not_equals("mode", "idle")),),
+        ).instantiate("dut")
+        group.sample({"a": 1, "b": 1, "mode": "idle"})
+        self.assertEqual(group.point_coverage("a"), 100)
+        self.assertEqual(group.cross_coverage("ab"), 0)
+        self.assertEqual(group.report()["crosses"][0]["gated"], 1)
+        group.sample({"a": 1, "b": 1, "mode": "active"})
+        group.assert_coverage()
+
+    def test_weighted_goal_and_reset_preserve_definition(self) -> None:
+        definition = CoverGroupDef(
+            "weighted",
+            (CoverPointDef("a", {"zero": Bin.values(0), "one": Bin.values(1)}, weight=3),
+             CoverPointDef("b", {"zero": Bin.values(0), "one": Bin.values(1)}, weight=1)),
+            goal=75,
+        )
+        group = definition.instantiate("dut")
+        group.sample({"a": 0, "b": 0})
+        self.assertFalse(group.covered)
+        group.sample({"a": 1, "b": 0})
+        self.assertEqual(group.coverage, 87.5)
+        self.assertTrue(group.goal_met)
+        self.assertFalse(group.covered)
+        self.assertEqual(group.uncovered(), ("b.one",))
+        with self.assertRaisesRegex(AssertionError, "item goals.*b"):
+            group.assert_coverage()
+        group.assert_coverage(per_item=False)
+        group.reset()
+        self.assertEqual(group.samples, 0)
+        self.assertEqual(group.coverage, 0)
+        self.assertIs(group.definition, definition)
+        with self.assertRaises(AssertionError):
+            group.assert_coverage()
 
     def test_cross_uses_bin_id_cartesian_product_for_overlap(self) -> None:
         with warnings.catch_warnings():
@@ -363,3 +405,37 @@ class FunctionalCoverageTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+@pytest.mark.parametrize("values,pattern,overlap,expected", [
+    ([1, 2, 3], (1, 2, 3), True, 1),
+    ([1, 9, 2, 3], (1, 2, 3), True, 0),
+    ([1, 1, 1], (1, 1), True, 2),
+    ([1, 1, 1], (1, 1), False, 1),
+])
+def test_adjacent_transition_bins(values, pattern, overlap, expected):
+    group = CoverGroupDef("state", (CoverPointDef("value", {
+        "path": Bin.transition(*pattern, overlap=overlap),
+    }),)).instantiate("dut")
+    for value in values:
+        group.sample({"value": value})
+    report = group.report()
+    assert report["points"][0]["counts"]["path"] == expected
+    assert report["schema"]["version"] == 2
+    assert CoverGroup.from_report(report).report() == report
+
+
+def test_transition_history_is_atomic_and_not_merged():
+    schema = CoverGroupDef("state", (
+        CoverPointDef("value", {"path": Bin.transition(1, 2)}),
+        CoverPointDef("other", {"zero": Bin.values(0)}),
+    ))
+    group = schema.instantiate("dut")
+    group.sample({"value": 1, "other": 0})
+    with pytest.raises(KeyError):
+        group.sample({"value": 9})
+    group.sample({"value": 2, "other": 0})
+    assert group.report()["points"][0]["counts"]["path"] == 1
+    left, right = schema.instantiate("dut"), schema.instantiate("dut")
+    left.sample({"value": 1, "other": 0})
+    right.sample({"value": 2, "other": 0})
+    left.merge(right)
+    assert left.report()["points"][0]["counts"]["path"] == 0

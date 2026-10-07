@@ -184,6 +184,7 @@ class MemoryBackend:
         self._next_event_id = 1
         self._closed = False
         self._owner: object | None = None
+        self._coverage_collectors: list[Any] = []
 
     def acquire(self, owner: object) -> None:
         if self._owner is not None and self._owner is not owner:
@@ -276,10 +277,10 @@ class MemoryBackend:
                     tuple(all_hits),
                     True,
                 )
-            if self.phase is XPhase.FALLING_STABLE and any(
+            if self.phase is XPhase.FALLING_STABLE and (self.has_coverage_drive_work or any(
                 _trigger_uses_drive_stable(watcher.trigger)
                 for watcher in self._watchers.values()
-            ):
+            )):
                 return RunResult(
                     advanced,
                     self.phase,
@@ -311,12 +312,14 @@ class MemoryBackend:
     def clear_execution_state(self) -> None:
         """Clear state owned by one Execution while keeping the clock alive."""
 
-        if self._watchers:
+        if self._watchers or self._coverage_collectors:
             raise RuntimeError(
                 "cannot reset backend runtime with active watchers"
             )
 
     def close(self) -> None:
+        if self._coverage_collectors:
+            raise RuntimeError("close the owning Execution before closing its coverage backend")
         self._watchers.clear()
         self._closed = True
 
@@ -324,7 +327,7 @@ class MemoryBackend:
         """MemoryBackend signals are ordinary Python values."""
 
     def sample_drive_stable(self) -> RunResult | None:
-        if not any(
+        if not self.has_coverage_drive_work and not any(
             _trigger_uses_drive_stable(watcher.trigger)
             for watcher in self._watchers.values()
         ):
@@ -345,9 +348,15 @@ class MemoryBackend:
 
     @property
     def watcher_count(self) -> int:
-        return len(self._watchers)
+        return len(self._watchers) + len(self._coverage_collectors)
+
+    @property
+    def has_coverage_drive_work(self) -> bool:
+        return any(c.phase is XPhase.DRIVE_STABLE for c in self._coverage_collectors)
 
     def _evaluate_phase(self) -> list[BackendHit]:
+        for collector in self._coverage_collectors:
+            collector.observe(self.phase, self.tick)
         hits: list[BackendHit] = []
         occurrence_ids: dict[tuple[Any, ...], int] = {}
         for slot, watcher in tuple(self._watchers.items()):
@@ -564,6 +573,7 @@ class XCommClockBackend:
         self._triggers: dict[tuple[int, int], XTrigger[Any]] = {}
         self._program_cache: dict[tuple[Any, ...], tuple[str, Any]] = {}
         self._python_last_condition: dict[tuple[int, int], bool] = {}
+        self._coverage_collectors: list[Any] = []
         self.tick = int(clock.GetHalfTick())
         self.phase = _xcomm_phase(clock.GetPhase())
         self._closed = False
@@ -729,11 +739,15 @@ class XCommClockBackend:
             if limit.max_wall_time_ms is None
             else max(1, int(limit.max_wall_time_ms * 1_000_000))
         )
-        native_result = self._engine.RunUntil(
-            limit.max_ticks,
-            wall_time_ns,
-            limit.budget_check_interval,
-        )
+        try:
+            native_result = self._engine.RunUntil(
+                limit.max_ticks,
+                wall_time_ns,
+                limit.budget_check_interval,
+            )
+        except RuntimeError as error:
+            self._coverage_error(error)
+            raise
         return self._convert_native_result(native_result)
 
     def sample_drive_stable(self) -> RunResult | None:
@@ -746,10 +760,24 @@ class XCommClockBackend:
             raise RuntimeError(
                 "xspcomm was built without DriveStable SamplePhase support"
             )
-        native_result = self._engine.SamplePhase(
-            self._xspcomm.XPhase_DriveStable
-        )
+        try:
+            native_result = self._engine.SamplePhase(self._xspcomm.XPhase_DriveStable)
+        except RuntimeError as error:
+            self._coverage_error(error)
+            raise
         return self._convert_native_result(native_result)
+
+    def _coverage_error(self, error: RuntimeError) -> None:
+        if str(error) != "coverage illegal bin":
+            return
+        from .coverage import IllegalBinError
+        hits = []
+        for collector in self._coverage_collectors:
+            previous = len(collector.group._illegal_hits)
+            collector.sync()
+            hits.extend(collector.group._illegal_hits[previous:])
+        if hits:
+            raise IllegalBinError(hits) from error
 
     def _convert_native_result(self, native_result: Any) -> RunResult:
         self.tick = int(self.clock.GetHalfTick())
@@ -759,6 +787,13 @@ class XCommClockBackend:
         sampled_only = False
         for hit in native_result.hits:
             key = (int(hit.slot), int(hit.generation))
+            collector = next((c for c in self._coverage_collectors if c.handle is not None
+                              and (c.handle.slot, c.handle.generation) == key), None)
+            if collector is not None:
+                collector.observe(self.phase, self.tick)
+                self.rearm(collector.handle)
+                sampled_only = True
+                continue
             trigger = self._triggers.get(key)
             if isinstance(trigger, PythonPredicateTrigger):
                 current = bool(trigger.predicate())
@@ -792,7 +827,7 @@ class XCommClockBackend:
     def clear_execution_state(self) -> None:
         """Clear per-Execution native state without closing this backend."""
 
-        if self._native_handles or self._engine.ActiveCount():
+        if self._native_handles or self._engine.ActiveCount() or self._coverage_collectors:
             raise RuntimeError(
                 "cannot reset backend runtime with active watchers"
             )
@@ -807,6 +842,8 @@ class XCommClockBackend:
     def close(self) -> None:
         if self._closed:
             return
+        if self._coverage_collectors:
+            raise RuntimeError("close the owning Execution before closing its coverage backend")
         self._engine.Clear()
         self._native_handles.clear()
         self._triggers.clear()
@@ -818,6 +855,10 @@ class XCommClockBackend:
         """Propagate writes made at the current stable phase."""
 
         self.clock.RefreshComb()
+
+    @property
+    def has_coverage_drive_work(self) -> bool:
+        return any(c.phase is XPhase.DRIVE_STABLE for c in self._coverage_collectors)
 
     @property
     def watcher_count(self) -> int:
