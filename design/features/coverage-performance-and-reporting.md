@@ -1,5 +1,9 @@
 # Functional coverage 性能与统一报告
 
+本文的事务采样路径与性能数字是已有实现的历史基线。下一轮周期/时序覆盖的 native
+计数方案见[实施计划](../delivery/stateful-coverage-plan-2026-09.md)，基础采集路径已实现；
+独立 XClock 微基准使用[覆盖率基准脚本](../../benchmarks/benchmark_coverage.py)，不能外推为真实 DUT 加速比。
+
 ## 1. “不影响性能”的准确含义
 
 Functional coverage 不可能是零 CPU 成本。框架保证的是隔离和可量化，而不是声称免费：

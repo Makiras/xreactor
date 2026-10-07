@@ -1,5 +1,8 @@
 # 调度、Sampling Phase 与 Half-step
 
+当前 Execution 通过 [asyncio 调度观察器](asyncio-observer.md)判断本阶段的即时
+回调是否处理完。asyncio 保持唯一的 Python 调度器；Driver 使用原生锁和信号量。
+
 ## 稳定采样点
 
 XClock 的每个 half 内已经包含 pin 更新、simulator eval、port write、第二次 eval 和
@@ -28,7 +31,7 @@ RunUntil 停在 FALLING_STABLE
   -> XReactor 广播全部事件
   -> resolve Future
   -> SimulationPump yield
-  -> 被 falling 唤醒的用户 task 执行同步写入，直到自己的下一次 await
+  -> 被 falling 唤醒的 task 及其级联唤醒处理完，直到阻塞或结束
   -> XClock::RefreshComb()
   -> XTriggerEngine::SamplePhase(DRIVE_STABLE)，不推进 half-tick
   -> XReactor 同步 capture 并广播完整 hit batch
@@ -51,6 +54,14 @@ simulator 标准 region。只有存在 `DriveStable` watcher 时才执行，因�
 流程不增加这次 refresh 和 Python 往返。一个 falling waiter 恢复后、在**下一次 await
 之前**完成的写入属于本次 drive window；框架不等待任意 coroutine 达到全局静止，也不把
 HTTP 等外部 await 纳入这个窗口。
+
+Execution 通过 call_soon 观察域内即时回调。回调及其级联唤醒执行完或取消后，
+才允许下一次 RunUntil 或 DriveStable 采样；Task/Lock/Queue/Event 以及组合等待
+都保留 asyncio 实现。新 Task 的启动也在屏障内，不需要特定次数的 sleep(0)。
+
+等待 pending Future 不阻止时钟。外部服务使用 external_task 在域外运行；外部 I/O、
+Timer 和跨线程通知由宿主实际交付后才进入仿真工作。框架不扫描宿主的私有就绪队列，
+不创建第二套调度器，也不取得用户任务的取消权。
 
 ```python
 await FallingEdge(clk)
@@ -88,7 +99,7 @@ Pump 根据 active Registration 计算 RunLimit：
 | C++ Expr/FSM | 大 batch，由命中提前停止 |
 | pytrigger | 不越过下一 sampling phase |
 | Rising/Falling | 精确目标 half-step |
-| DriveStable | 停在 falling，经一次 cooperative drive window 后同 tick 采样 |
+| DriveStable | 停在 falling，经本阶段即时回调收敛后同 tick 采样 |
 | simulation timeout | 不越过 deadline |
 | 无仿真 waiter | IDLE |
 

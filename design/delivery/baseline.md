@@ -44,5 +44,5 @@ eval、waveform、coverage 和 HTTP p50/p99 的基线，不能与本表混用。
 - 每周期恢复 Python Future 比 native Expr 慢约 62 倍。
 
 因此 `drive_ready_valid()` 在 ready 为低时使用 native
-`Value(ready, 1, sample=FallingEdge(clock))` 等待，只在 drive、ready 命中和最终
+`Value(ready, 1, sample=DriveStable(clock))` 等待，只在 drive、ready 命中和最终
 accept 边界恢复 Python。它不应退化成逐 Rising/Falling 的 Python polling loop。

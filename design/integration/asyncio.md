@@ -1,5 +1,9 @@
 # asyncio、pytest、HTTP 与线程
 
+Execution 已接入 [asyncio 调度观察器](../architecture/asyncio-observer.md)：保留
+宿主 asyncio 调度，通过观察本 Execution 的即时回调约束时钟推进。该页包含核心
+代码、external_task 外部库包装示例及性能测量边界。
+
 ## asyncio 是宿主
 
 核心规则：

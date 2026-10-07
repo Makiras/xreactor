@@ -4,21 +4,46 @@ repo_url: https://github.com/Makiras/xreactor
 theme:
   name: readthedocs
 nav:
-  - Home: index.md
-  - Getting started:
-      - Installation: getting-started/installation.md
-      - First test: getting-started/first-test.md
-      - Examples: examples.md
-  - Guides:
-      - Execution and Backend: guides/execution-and-backend.md
-      - Trigger: guides/triggers.md
-      - Compiled triggers and FSM: guides/compiled-triggers.md
-      - Interfaces and components: guides/interfaces-and-components.md
-      - asyncio and pytest: guides/asyncio-and-pytest.md
-      - Coverage: guides/coverage.md
-  - Reference:
+  - 首页: index.md
+  - 从零开始:
+      - 学习路线: getting-started/index.md
+      - 0. 准备环境: getting-started/installation.md
+      - 1. 第一次 PASS 和 FAIL: getting-started/first-test.md
+      - 2. 输入与时钟: getting-started/clock-and-input.md
+      - 3. 多组数据与边界: getting-started/more-cases.md
+      - 4. 提取 Driver: getting-started/driver.md
+      - 5. 延迟输出与 Monitor: getting-started/monitor.md
+      - 6. 组装 Agent: getting-started/agent-test.md
+      - 7. 模型与测试环境: getting-started/reference-model.md
+      - 8. 流水、多批次与取消: getting-started/pipeline.md
+      - 9. 看懂失败: getting-started/failures.md
+      - 10. 功能覆盖率: getting-started/coverage.md
+      - 选读：乱序响应: getting-started/out-of-order.md
+      - 选读：native 与项目 DUT: getting-started/native-and-next.md
+  - 仿真与事件:
+      - Execution 与 Backend: guides/execution-and-backend.md
+      - Trigger 与超时: guides/triggers.md
+      - 编译条件、Sequence 与 FSM: guides/compiled-triggers.md
+      - 持久订阅: guides/subscriptions.md
+  - 验证组件:
+      - 信号与结构化数据: guides/data.md
+      - Driver: guides/drivers.md
+      - Monitor: guides/monitors.md
+      - Agent 与参考模型: guides/agents-and-reference-models.md
+      - Scoreboard 与事务: guides/scoreboard.md
+      - 可选协议视图: guides/protocols.md
+  - 覆盖率与运行:
+      - Functional coverage: guides/coverage.md
+      - 功能点与跨用例覆盖: guides/functional-points.md
+      - 报告与运行产物: guides/verification-flow.md
+      - 外部 asyncio 集成: guides/asyncio-and-pytest.md
+  - 使用场景:
+      - 流水输入与阶段重叠: guides/pipeline-examples.md
+      - 可运行示例: examples.md
+  - 参考:
+      - 功能与回归索引: reference/feature-map.md
       - API: reference/api.md
-      - Semantics and limitations: reference/semantics-and-limitations.md
+      - 行为与限制: reference/semantics-and-limitations.md
 markdown_extensions:
   - tables
   - fenced_code

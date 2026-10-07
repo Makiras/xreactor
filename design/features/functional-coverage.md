@@ -4,6 +4,10 @@
 SystemVerilog 语法，而是保留硬件验证中真正影响结果可信度的语义，并适配 Python、
 pytest、XClock 和事务级 Monitor。
 
+状态说明：本文记录静态 bins 首版设计。状态转移、复杂历史模式与 native 采集的下一轮
+方案见[有状态覆盖实施计划](../delivery/stateful-coverage-plan-2026-09.md)。基础 Trigger IR 复用、转移 bins 和 native count sink 已实现；capture/key 仍待后续阶段。
+当前使用方式见[覆盖指南](../../docs/guides/coverage.md)，它扩展了本文 V1 的事务采样边界。
+
 ## 1. Coverage 回答什么问题
 
 代码覆盖率回答“RTL 的哪些结构执行过”，功能覆盖率回答“验证计划中的哪些行为组合
@@ -54,6 +58,11 @@ Instance 保存某个 covergroup 实例的：
 Database 负责跨 pytest case、seed、进程或 CI shard 合并。合并前必须校验 schema
 digest；同名但 bin 边界不同的数据必须报错，不能静默相加。计数使用整数相加，覆盖率
 由合并后的计数重新计算，不能平均各次运行的百分比。
+
+报告版本 2 保存独立采集 origin、run_id 和内容 snapshot_id。合并只允许不重叠的来源；
+重复快照和累计链重叠在提交前拒绝。普通 bin 保存按来源组织的稀疏 count、first/last
+metadata，native 当前没有逐次命中位置，first/last 为 null。手动事务采样可在 instantiate
+中声明稳定的 contract；项目通过 run_metadata 保存测试名、seed、RTL 与配置基线。
 
 ## 3. 采样模型
 
@@ -134,6 +143,9 @@ covered(bin) = hits(bin) >= at_least(bin)
 
 在达到 `at_least` 前不能按 `hits / at_least` 给部分分。Point coverage 是 covered normal
 bins / eligible normal bins。ignore、illegal、default 和 disabled bins 不进入分母。
+完全被 ignore/illegal 覆盖的普通 bin 也不进入分母和自动 cross；部分排除保留其剩余空间。
+空 bin 的 schema 与排除原因仍留在报告中。区间/mask 联合排除采用符号分析，复杂度超限
+时报 schema error。Transition 按完成时优先级解析静态完成值与相同模式的完全排除。
 
 Group coverage 是 point/cross coverage 的加权平均：
 
@@ -144,10 +156,17 @@ sum(item.coverage * item.weight) / sum(item.weight)
 `goal` 只决定 pass threshold，不改变百分比；`weight=0` 可显式让某项只报告、不进入 group
 分数。空分母必须在 finalize 阶段报错，不能返回虚假的 100%。
 
+默认 covered/assert_coverage 同时要求组目标与所有正权重子项目标达成、采集完整且无
+illegal hit；goal_met 单独表示组分数达到阈值。assert_coverage(per_item=False) 可显式选择
+只检查组阈值，仍拒绝非法命中和不完整采集。覆盖验收不能代替 Scoreboard 正确性检查。
+
 ## 5. Cross coverage
 
 Cross 的单位不是原始 value，而是同一次 sample 命中的 point bin ID 的笛卡尔积。
 ignore、illegal 和 default point bins不参与自动 cross 空间。
+Cross ID 使用维度数组的无歧义编码；显示标签不参与计数键。报告显式保存 tuple、kind
+与阈值，避免名称中包含分隔符时合并不同组合。自动展开前先检查乘积大小；显式 include
+只解析指定组合，不构造整个笛卡尔积。
 
 自动 cross 很容易指数爆炸，因此需要：
 

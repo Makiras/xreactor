@@ -35,4 +35,4 @@ xreactor = ["templates/*.html", "templates/*.css"]
 pythonVersion = "3.11"
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+testpaths = ["tests", "examples/getting_started", "examples/transactions/test_pipeline_coverage.py"]

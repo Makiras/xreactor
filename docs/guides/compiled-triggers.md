@@ -1,4 +1,4 @@
-# 编译条件、Sequence、FSM 与订阅
+# 编译条件、Sequence 与 FSM
 
 ## `@xtrigger`
 
@@ -28,9 +28,13 @@ event = await handshake(dut)
 `@pytrigger` 用于调用 Python predicate：
 
 ```python
+from xreactor import pytrigger
+
+allowed_values = {1, 2, 3}
+
 @pytrigger(sample=RisingEdge("clk"))
 def model_accepts(dut):
-    return reference_model.accept(int(dut.data.U()))
+    return dut.data.U() in allowed_values
 ```
 
 predicate 是同步函数，并在指定的 sample phase 执行。异步数据源使用
@@ -39,6 +43,8 @@ predicate 是同步函数，并在指定的 sample phase 执行。异步数据�
 ## 非重叠 Sequence
 
 ```python
+from xreactor import Hold, Next, Sequence, Wait, Within
+
 @xtrigger(sample=RisingEdge("clk"))
 def request_then_ack(dut):
     return Sequence(
@@ -49,13 +55,21 @@ def request_then_ack(dut):
 ```
 
 - `Wait(expr)`：等待条件；
+- `Next(expr)`：紧接的下一个 sample 必须满足条件，否则重新等待序列起点；
 - `Within(min, max, expr)`：在周期窗口中等待；
 - `Hold(expr, cycles=N)`：要求连续保持 N 个 sample；
 - 当前 Sequence 是非重叠匹配，一个 registration 维护一个活动状态。
 
+这些对象识别观察到的模式。Within 超出窗口回到 Sequence 开始；Hold 失配只清零
+当前保持步骤的连续计数，继续等待同一个 Hold。二者都**不会自动抛出断言失败**；
+一次完整模式命中才产生事件。测试需要失败期限时，应显式处理
+[超时](triggers.md)。用于发送激励的场景仍可用普通 async 函数组合。
+
 ## 显式 FSM
 
 ```python
+from xreactor import FSM, State
+
 @xtrigger(sample=RisingEdge("clk"))
 def request_fsm(dut):
     return FSM(
@@ -72,28 +86,18 @@ def request_fsm(dut):
 同一 state 的分支按声明顺序判断。terminal trigger 产生 `FsmEvent`，terminal 名称位于
 `event.terminal_state`。
 
-## `@on` 持久订阅
 
-```python
-from xreactor import on
+持续采样与 handler 交付见[订阅](subscriptions.md)；需要接收事务记录时见 [Monitor](monitors.md)。
 
+Within 的最小/最大值均包含边界，进入该步骤后的下一个 sample 年龄为 1；一个 sample
+至多完成一个步骤。包括过早命中、上界命中、窗口超时重启和 Hold 间断的可运行回归：
 
-@on(handshake, delivery="lossless", capacity=64)
-async def observe(event):
-    scoreboard.push(event)
-
-
-async with Execution(backend) as execution:
-    subscription = execution.subscribe(observe.bind(dut))
-    ...
+```bash
+python3 -m pytest -q tests/integration/test_compiled_patterns.py --require-xspcomm
 ```
 
-`await trigger` 是 one-shot registration；`@on` 使用同一 Trigger 编译路径，但命中后
-自动 rearm，并把结果送入 handler queue。
+同样的采样表在 MemoryBackend 与 native 引擎上都检查命中 tick。
 
-- `lossless`：队列满时显式失败；
-- `latest`：队列满时丢弃旧项目，只保留新值；
-- `capture=` 必须是同步函数，用于在命中 phase 立即制作不可变 snapshot；
-- handler 必须是 `async def`。
-
-Execution 退出时会取消并回收所有 subscription。
+同一份编译条件也可绑定到 CoverGroup，匹配后在 C++ 内持续累计覆盖，详见
+[绑定覆盖采集](coverage.md)。计数注册拥有独立匹配历史，普通 await 的注册和
+返回事件语义保持不变。

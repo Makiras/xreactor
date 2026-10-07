@@ -1,64 +1,55 @@
-# XReactor 内部设计与验证记录
+# XReactor 设计与计划
 
-本目录保存 XReactor 的实现设计、历史决策、验证记录和交付记录，主要面向维护者。使用框架时请从[用户文档](../docs/index.md)开始。
+本目录面向维护者，说明框架如何工作、后续准备做什么，以及设计选择的依据。学习和使用框架请从[用户文档](../docs/index.md)开始。
 
-Toffee 只作为需求和方法学参考；新框架不承担 Toffee API 兼容。Picker 继续生成 DUT 和稳定接入协议，xcomm 提供高性能 backend，新框架负责 Python API、生命周期和 asyncio 集成。
+判断当前能力时，优先阅读[当前实现说明](current-implementation.md)和[已冻结的设计决策](decisions.md)。专题设计解释职责和契约，实施计划记录未来工作，验证记录保留特定版本的检查证据；计划中的接口和历史测试结果不能直接视为当前能力。
 
-## 一句话模型
+## 从哪里开始阅读
 
-```text
-XTrigger：等待规格
-    -> XReactor：注册、组合、分发
-    -> XTriggerEngine：C++ phase 求值
-    -> XBackendHit：底层命中记录
-    -> XEvent：交付给 await/@on 的结果
+- 了解当前框架：先读[当前实现说明](current-implementation.md)，再读[总体架构](architecture/overview.md)。
+- 修改已有行为：先查[冻结决策](decisions.md)，再阅读对应的专题设计和用户指南。
+- 选择下一项工作：从[实施路线与后续计划](delivery/roadmap.md)进入，查看具体计划的范围和验收要求。
+- 查找分析依据：使用[调研与验证记录索引](verification/README.md)，按主题查阅审计、回归和研究文档。
 
-SimulationPump：控制 RunUntil、half-step 和 asyncio yield
-```
+## 核心架构与运行语义
 
-## 阅读顺序
+XTrigger 描述等待条件，XReactor 管理注册与事件交付，xcomm 的 XTriggerEngine 在 C++ 中求值。SimulationPump 在 Execution 内控制仿真推进，与宿主 asyncio 协同工作。
 
-1. [当前实现说明（代码审计版）](current-implementation.md)
-2. [已冻结的设计决策](decisions.md)
-3. [总体架构](architecture/overview.md)
-4. [调度、sampling phase 与 half-step](architecture/scheduling-and-phase.md)
-5. [XTrigger、XEvent 与 XReactor](concepts/trigger-event-reactor.md)
-6. [用户 API 草案](concepts/public-api.md)
-7. [位宽、有符号与四态语义](concepts/value-semantics.md)
-8. [编译式 Trigger](features/compiled-triggers.md)
-9. [FSM 与 Sequence](features/fsm-and-sequence.md)
-10. [@on 与持久订阅](features/subscriptions.md)
-11. [xcomm 现状核对](backend/xcomm-audit.md)
-12. [C++ XTriggerEngine](backend/trigger-engine.md)
-13. [XData、native identity 与时钟源边界](backend/xpin-xdata-boundary.md)
-14. [XData、Bundle 与 Interface 设计](architecture/data-bundle-interface.md)
-15. [Ready/Valid 驱动](features/ready-valid.md)
-16. [Functional coverage 设计](features/functional-coverage.md)
-17. [Functional coverage 性能与统一报告](features/coverage-performance-and-reporting.md)
-18. [asyncio、pytest、HTTP 与线程](integration/asyncio.md)
-19. [实施 Roadmap](delivery/roadmap.md)
-20. [测试与性能门槛](delivery/testing.md)
-21. [Cache 功能验证报告](verification/cache-functional.md)
-22. [e203 IFU-to-ICB 验证报告](verification/e203-functional.md)
+- [总体架构](architecture/overview.md)：组件职责、仓库边界与生命周期。
+- [调度与采样阶段](architecture/scheduling-and-phase.md)、[asyncio 调度观察器](architecture/asyncio-observer.md)：时钟何时推进，Python 工作如何在推进前完成。
+- [Trigger 与 Event](concepts/trigger-event-reactor.md)、[API 设计](concepts/public-api.md)、[数值语义](concepts/value-semantics.md)：公共对象、位宽、有符号数与四态值。
+- [编译式 Trigger](features/compiled-triggers.md)、[FSM 与 Sequence](features/fsm-and-sequence.md)、[持久订阅](features/subscriptions.md)：表达式和时序匹配如何执行。
+- [C++ TriggerEngine](backend/trigger-engine.md)、[信号与时钟边界](backend/xpin-xdata-boundary.md)：原生执行和数据接入的契约。
+- [外部 asyncio 集成](integration/asyncio.md)：pytest、HTTP、线程和宿主任务的接入方式。
 
-## 核心 MVP
+## 数据与验证组件
 
-M0～M3 构成核心 MVP：
+- [结构化数据与绑定](architecture/data-bundle-interface.md)、[ReadyValid 设计](features/ready-valid.md)：信号如何组织，通道如何驱动和采样。
+- [功能覆盖设计](features/functional-coverage.md)、[覆盖性能与报告](features/coverage-performance-and-reporting.md)：覆盖定义、采样、合并与报告。
+- [Driver 资源占用讨论](architecture/driver-resources.md)：资源声明与占用的候选接口，尚未形成新的公共资源类。
+- [寄存器模型与 SystemRDL 接入设计](architecture/systemrdl-register-model.md)：后续寄存器支持的分层，以及构建时生成和运行时构建的取舍。
 
-- 冻结对象、phase、位宽和生命周期契约；
-- 提供 C++ half-step、XTriggerEngine、BackendHit/RunResult；
-- 跑通 `await RisingEdge/FallingEdge`；
-- 跑通编译到 C++ 的 Expr/FSM Trigger。
+Driver、Monitor、Agent、参考模型与 Scoreboard 的当前用法见[验证组件指南](../docs/guides/agents-and-reference-models.md)；实施依据保存在[验证记录](verification/README.md)中。
 
-M4 再加入 `@on`、组合触发器和外部 asyncio adapter。XClock stable contract 已经是
-完整公共时序边界，不规划 cocotb event-region API；多时钟按真实用例扩展，项目专用
-方法学由 agent 基于基础抽象生成。
+## 后续工作与验收
 
-## 文档状态
+[路线图](delivery/roadmap.md)统一组织后续工作的推进顺序。具体计划只描述各自的交付范围和验收条件，避免在多处维护不同的优先级。
 
-- [当前实现说明](current-implementation.md)：以代码为事实来源，记录当前可用
-  API、已验证语义和未实现边界；判断当前能力时优先阅读。
-- 本目录：正式、模块化设计，后续修改应优先落在这里。
-- [原始综合分析](history/asyncio-simulation-kernel.zh.md)：保留源码核对过程、历史讨论和完整背景。
-- [用户文档](../docs/index.md)：安装、入门、使用指南和 API 参考。
-- [XReactor 项目入口](../README.md)：代码、测试、样例和开发约定。
+- [SystemRDL 支持计划](delivery/systemrdl-support.md)：TODO，先打通生成访问包和总线 Agent 接入。
+- [有状态覆盖实施计划](delivery/stateful-coverage-plan-2026-09.md)：基础采集已交付，保留 capture、事务 key 关联等后续目标。
+- [测试与性能要求](delivery/testing.md)：检查范围和性能验收方法。
+
+## 实施记录与研究
+
+- [验证流程实施记录](delivery/verification-flow-next.md)：Monitor 终止、Agent 接入、覆盖产物和运行配方的交付范围。
+- [持续随机化调研](verification/continuous-randomization-research-2026-09.md)、[Hypothesis 扩展调研](verification/hypothesis-stateful-randomization-research-2026-10.md)：状态依赖的激励、覆盖反馈、失败简化和探针结果。
+- [xcomm 初期审计](backend/xcomm-audit.md)、[性能基线](delivery/baseline.md)、[原始综合分析](history/asyncio-simulation-kernel.zh.md)：早期分析与测量背景。
+- [其他调研与验证记录](verification/README.md)：按框架、组件、覆盖率和真实 DUT 分类查阅。
+
+## 文档维护约定
+
+已有功能的职责和契约写入对应专题设计；未来工作写入实施计划并从路线图链接；测试结果和调研过程写入验证记录。新计划应在开头说明是否已经实现，并区分推荐方案与已冻结接口。历史结果保留原日期、测试范围和限制，后续结论通过链接关联。
+
+运行报告、覆盖数据库、日志和测量数据是本地产物，由 `.gitignore` 排除。正式设计、用户文档、验证计划和检查代码保留在仓库。
+
+Picker 负责 DUT 生成和稳定接入协议，xcomm 提供原生 backend，XReactor 负责 Python API、组件生命周期和 asyncio 集成。Toffee 作为需求和方法学参考，项目不承担其 API 兼容。

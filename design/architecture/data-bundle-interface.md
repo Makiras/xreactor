@@ -2,6 +2,11 @@
 
 > 状态日期：2026-09-15
 > 状态：核心端口抽象和自动层次视图已实现并经真实 Cache 验证；协议专用结构交由 agent 组织，native 批量快照待实现。
+>
+> 2026-09-28 更新：本文保留当时的概念推导；公共 API 已移除空的
+> `Interface` 标记基类。`Bundle` 负责信号视图，`Driver`/`Monitor` 不依赖该基类；
+> `ReadyValid` 仍是可选的具体通道视图。当前用法见
+> [Bundle、Driver 与 Monitor](../../docs/guides/data.md)。
 
 ## 结论
 
@@ -371,16 +376,13 @@ req.fire   # symbolic valid & ready，按协议 sample phase 使用
 协议对象只定义字段、角色和 transfer 规则；主动行为与被动观察分别进入 Driver 和
 Monitor。
 
-当前实现提供 `Driver[T]`、`Monitor[T]` 两个最薄抽象基类，以及
-`ReadyValidDriver`、`ReadyValidMonitor`。基类只冻结主动发送/被动接收和生命周期
-边界，不提前引入 sequence、agent、factory 等 UVM 层次。
+当前实现提供 `Driver[T]`、`Monitor[T]` 最小契约、SignalDriver 所有权层和
+SyncDriver/AsyncDriver 模板。协议驱动应继承 Sync/Async 模板；独立 ReadyValidDriver
+已移除，暂不提供替代类。ReadyValidMonitor 继续提供被动观察。
 
 ```text
-ReadyValid
-  ├── ReadyValidDriver
-  │     send(transaction) -> XEvent/Transfer
-  └── ReadyValidMonitor
-        recv() / async for -> Transfer[BundleValue]
+Driver -> SignalDriver -> SyncDriver / AsyncDriver -> 项目协议驱动
+Monitor -> ReadyValidMonitor -> recv() -> Transfer[BundleValue]
 ```
 
 `XEvent` 表示“底层 occurrence 已经发生”，payload transaction 不是 XEvent 本身。
@@ -399,7 +401,7 @@ class Transfer(Generic[T]):
 Driver：
 
 - 独占自己负责的驱动叶子；
-- 用 `asyncio.Lock` 串行化同一 channel 的 `send()`；
+- 复用 Sync/Async 模板的并发限制，按需要定义共享资源占用；
 - 基于已实现的 `drive_ready_valid()` 保证 valid 不跨过两个 accepting edge；
 - transaction encoder 只负责把值映射到 bits，不负责推进时间；
 - cancel/exception 必须撤销 valid，并保持 ownership 状态可恢复。
@@ -492,7 +494,7 @@ Decoupled           可作为 contract/薄子类
 Irrevocable         后置
 Role
 Driver / Monitor
-ReadyValidDriver / ReadyValidMonitor
+SyncDriver / AsyncDriver / ReadyValidMonitor
 Transfer
 ```
 
@@ -610,7 +612,7 @@ Python protocol，否则这只会把同一层代理换名重做。需要统一�
 D0 统一 as_xdata()，冻结 XData identity 规则
   -> D1 Bundle + BundleValue + nested path/XZ tests
   -> D2 ReadyValid + Role，只实现结构和 fire 规格
-  -> D3 ReadyValidDriver，复用 drive_ready_valid()
+  -> D3 协议驱动复用 Sync/Async 模板及 drive_ready_valid()
   -> D4 原子 capture + ReadyValidMonitor + Transfer
   -> D5 用 Cache 四类 channel 做真实重构验证
   -> D6 Picker 生成层次 Bundle/Interface，默认直接暴露 XData
@@ -619,6 +621,9 @@ D0 统一 as_xdata()，冻结 XData identity 规则
 ```
 
 截至 2026-09-15 的实际状态：
+
+下面保留历史验收结果；2026-09-29 已移除当时的独立协议 Driver 类，D3 的发送能力
+由通用模板及项目协议实现组合，见[协议指南](../../docs/guides/protocols.md)。
 
 | 项 | 状态 | 证据/边界 |
 | --- | --- | --- |

@@ -1,6 +1,6 @@
 # 基于 xcomm 的 XTrigger / XEvent / XReactor 异步仿真框架设计
 
-> 本文保留完整源码核对、讨论背景和历史推导。正式的模块化设计文档已经迁移到 [XReactor 异步仿真框架文档目录](xreactor-framework/README.md)，后续设计更新优先修改新目录。
+> 本文保留完整源码核对、讨论背景和历史推导。正式的模块化设计文档见 [XReactor 设计目录](../README.md)，后续设计更新优先修改对应专题文档。
 
 ## 1. 文档目的
 
