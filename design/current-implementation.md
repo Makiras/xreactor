@@ -13,6 +13,11 @@ external_task 和 max_settle_rounds 是公共接口，实验子类已移除。
 单周期、固定阶段多周期模板，`DriveStage` 声明固定阶段时长；动态握手由项目 Driver
 定义接受条件。当前层次与边界见[Driver 指南](../docs/guides/drivers.md)。
 
+版本构建已接入 tag 派生的包版本、PR 版本标签、固定 native 依赖与发布前完整 CI。
+源码包重建、隔离安装和产物清单检查是发布门槛；流程见
+[版本与发布](../docs/guides/versioning-and-releases.md)。本地验证与 GitHub 实际运行的
+结果分别记录，不能把工作流文件已经存在视为远端 CI 已通过。
+
 ## 结论
 
 当前已经完成一个可运行的**单时钟、asyncio-native 核心 MVP**，但没有完成整个

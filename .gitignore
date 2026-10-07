@@ -1,7 +1,63 @@
+# Python bytecode, environments and tool caches.
 __pycache__/
 *.py[cod]
 .venv/
+.pytest_cache/
+.hypothesis/
+.mypy_cache/
+.ruff_cache/
+.tox/
+.nox/
+
+# Python packaging and documentation builds.
 build/
 dist/
 site/
 *.egg-info/
+.eggs/
+*.egg
+*.whl
+
+# Native simulator builds and waveforms.
+obj_dir/
+*.o
+*.a
+*.so
+*.so.*
+*.dylib
+*.vcd
+*.fst
+
+# Python and native coverage data.
+.coverage
+.coverage.*
+htmlcov/
+/coverage.xml
+/coverage.json
+/coverage.dat
+/*_coverage.dat
+/*-coverage.dat
+*.gcda
+*.gcno
+
+# Runtime artifacts and generated reports stay local.
+/output/
+
+# Local copies of dependencies and release artifacts used by CI.
+/_deps/
+/release-assets/
+
+# Legacy generated evidence saved alongside authored verification records.
+# Keep notes, probes, fixtures and formal verification plans visible to Git.
+/design/verification/*-measurements-*.json
+/design/verification/*-results-*.json
+/design/verification/feature-docs-regression-*.json
+/design/verification/rtl-internal-observation-inventory-*.json
+/design/verification/rtl-property-evidence-*/
+
+# Editor backups and operating-system metadata.
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db

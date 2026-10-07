@@ -2,30 +2,149 @@ name: CI
 
 on:
   push:
+    branches: ["**"]
   pull_request:
+  workflow_dispatch:
+  workflow_call:
+    inputs:
+      ref:
+        type: string
+        default: ""
+      expected-version:
+        type: string
+        default: ""
+      artifact-name:
+        type: string
+        default: xreactor-dist
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
+      fail-fast: false
       matrix:
         python-version: ["3.11", "3.12"]
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ inputs.ref || github.sha }}
+      - name: Read native dependency pin
+        id: native
+        run: |
+          python - <<'PY'
+          import json, os, re
+          pin = json.load(open('.github/native-dependencies.json'))['xcomm']
+          assert re.fullmatch(r'[0-9a-f]{40}', pin['ref'])
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              for key in ('repository', 'ref', 'coverage_abi'):
+                  print(f'{key}={pin[key]}', file=output)
+          PY
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ steps.native.outputs.repository }}
+          ref: ${{ steps.native.outputs.ref }}
+          fetch-depth: 0
+          path: _deps/xcomm
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
-      - run: python -m pip install -e '.[test]'
-      - run: python -m pytest -q
+      - name: Install build and report tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential cmake ninja-build lcov
+          python -m pip install 'swig>=4.2,<5' '.[test]'
+      - name: Install pinned native backend
+        run: python -m pip install ./_deps/xcomm
+        env:
+          BUILD_XSPCOMM_SWIG: python
+          XSPCOMM_BUILD_WHEEL: "1"
+          CMAKE_BUILD_PARALLEL_LEVEL: "2"
+      - name: Require the tested native coverage ABI
+        env:
+          EXPECTED_ABI: ${{ steps.native.outputs.coverage_abi }}
+        run: |
+          python - <<'PY'
+          import os, xspcomm
+          assert xspcomm.XTriggerEngine.CoverageVersion() == int(os.environ['EXPECTED_ABI'])
+          PY
+      - run: python -m pytest -q --require-xspcomm
+      - name: Run documented command-line examples
+        run: |
+          python examples/getting_started/check_native.py
+          python -m pytest -q examples/getting_started/native_lab.py
+          python examples/triggers/basic_execution.py
+          python examples/coverage/functional_coverage.py
+          python examples/triggers/subscription.py
+          python examples/transactions/scoreboard.py
+          python -m examples.transactions.reference_model
+          python -m examples.transactions.reference_model --backend native
+          python examples/transactions/pipeline.py
+          python examples/transactions/pipeline.py --backend native
 
   docs:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ inputs.ref || github.sha }}
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
           cache: pip
-      - run: python -m pip install -e '.[docs]'
+      - run: python -m pip install '.[docs]'
       - run: mkdocs build --strict
+
+  package:
+    needs: [test, docs]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ inputs.ref || github.sha }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: python -m pip install 'build>=1,<2' 'twine>=6,<7'
+      - name: Build and validate distributions
+        env:
+          EXPECTED_VERSION: ${{ inputs.expected-version }}
+        run: |
+          python -m build
+          python -m twine check --strict dist/*.whl dist/*.tar.gz
+          python scripts/release/verify_dist.py --expected-version "$EXPECTED_VERSION"
+      - name: Rebuild from the source distribution without Git metadata
+        run: |
+          mkdir -p "$RUNNER_TEMP/sdist-source" "$RUNNER_TEMP/sdist-wheel"
+          tar -xf dist/xreactor-*.tar.gz -C "$RUNNER_TEMP/sdist-source"
+          source_dir=("$RUNNER_TEMP"/sdist-source/xreactor-*)
+          python -m build --wheel "${source_dir[0]}" --outdir "$RUNNER_TEMP/sdist-wheel"
+          original=(dist/*.whl)
+          rebuilt=("$RUNNER_TEMP"/sdist-wheel/*.whl)
+          test "$(basename "${original[0]}")" = "$(basename "${rebuilt[0]}")"
+      - name: Install the wheel in an isolated environment
+        run: |
+          python -m venv "$RUNNER_TEMP/wheel-test"
+          "$RUNNER_TEMP/wheel-test/bin/python" -m pip install --no-index dist/*.whl
+          "$RUNNER_TEMP/wheel-test/bin/python" -m pip check
+          "$RUNNER_TEMP/wheel-test/bin/python" -I -c 'from importlib.metadata import version; from importlib.resources import files; import xreactor; assert files("xreactor").joinpath("templates/unified_coverage.html").is_file(); print(version("xreactor"), xreactor.__file__)'
+      - name: Record exact tested build provenance
+        env:
+          EXPECTED_VERSION: ${{ inputs.expected-version }}
+        run: python scripts/release/verify_dist.py --expected-version "$EXPECTED_VERSION" --manifest --verify-manifest
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.artifact-name || 'xreactor-dist' }}
+          path: dist/*
+          if-no-files-found: error

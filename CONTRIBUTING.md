@@ -30,12 +30,52 @@ the backend creator is responsible for calling `close()`.
 
 ## Verification
 
-From this directory, with an xspcomm Python binding on `PYTHONPATH` when native
-tests are required:
+The default command runs pure-Python tests and uses a native xspcomm binding
+when one is already importable. It also discovers the standard sibling Picker
+build at `../picker/build/dependence/xcomm/python`:
 
 ```bash
 python3 -m pytest -q
 ```
 
-Pure-Python tests use `MemoryBackend`; native integration tests are skipped when
-the required xspcomm trigger API is unavailable.
+Pure-Python tests use `MemoryBackend`. Before merging a backend or scheduling
+change, require the native suite explicitly so a missing binding cannot turn
+into a successful run with skipped tests:
+
+```bash
+XCOMM_PYTHON=/path/to/xcomm/build/python \
+  python3 -m pytest -q --require-xspcomm
+```
+
+The binding must provide `XClock.StepHalf` and `XTriggerEngine`. Building it
+requires SWIG 4.2 or newer. To install it from xcomm source, both build switches
+are required:
+
+```bash
+BUILD_XSPCOMM_SWIG=python XSPCOMM_BUILD_WHEEL=1 \
+  python3 -m pip install /path/to/xcomm
+```
+
+CI always installs the pinned xcomm source and runs with
+`--require-xspcomm`; native integration coverage therefore cannot be silently
+skipped there.
+
+## Versions and releases
+
+Package versions come from Git tags through setuptools-scm. Do not add a second
+version string to the source. Each PR targeting `main` needs exactly one of
+`release:patch`, `release:minor`, or `release:major`; the first feature release
+uses `release:minor` to produce `v0.1.0`. Merge results are tagged automatically.
+Tagged CI repeats tests, strict documentation, distribution checks, a rebuild
+from the source archive, and an isolated wheel install before GitHub publishing.
+
+The xcomm checkout and required coverage ABI live in
+`.github/native-dependencies.json`. Update this pin alongside the relevant
+regressions; do not use a floating branch for release verification.
+Authored Markdown and Python records under `design/verification` are committed;
+write new generated reports, logs and coverage databases under `output/` so they
+remain ignored. Reusable report templates, fixtures and verification plans stay
+with the source files.
+
+See [versioning and releases](docs/guides/versioning-and-releases.md) for setup,
+failure recovery, artifact provenance and local pre-commit commands.

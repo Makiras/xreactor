@@ -1,14 +1,15 @@
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=77", "setuptools-scm>=8,<10"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "xreactor"
-version = "0.1.0.dev0"
+dynamic = ["version"]
 description = "Asyncio-native simulation triggers backed by xcomm"
 readme = "README.md"
 requires-python = ">=3.11"
-license = {text = "MulanPSL-2.0"}
+license = "MulanPSL-2.0"
+license-files = ["LICENSE"]
 authors = [{name = "XS-MLVP"}]
 dependencies = []
 
@@ -30,6 +31,11 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 xreactor = ["templates/*.html", "templates/*.css"]
+
+[tool.setuptools_scm]
+fallback_version = "0.1.0.dev0"
+tag_regex = '^v(?P<version>\d+\.\d+\.\d+)$'
+git_describe_command = 'git describe --dirty --tags --long --match "v[0-9]*"'
 
 [tool.pyright]
 pythonVersion = "3.11"

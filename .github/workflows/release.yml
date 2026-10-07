@@ -1,0 +1,104 @@
+name: Tagged release
+
+on:
+  push:
+    tags: ["v*.*.*"]
+  repository_dispatch:
+    types: [version-tagged]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing merged-PR release tag (vX.Y.Z) to verify and publish"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  pull-requests: read
+
+defaults:
+  run:
+    shell: bash
+
+concurrency:
+  group: xreactor-release-${{ github.event.client_payload.tag || inputs.tag || github.ref_name }}
+  queue: max
+  cancel-in-progress: false
+
+jobs:
+  resolve:
+    runs-on: ubuntu-24.04
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+      version: ${{ steps.version.outputs.version }}
+      sha: ${{ steps.version.outputs.sha }}
+    env:
+      TAG: ${{ github.event.client_payload.tag || inputs.tag || github.ref_name }}
+    steps:
+      - name: Check tag syntax before checkout
+        run: '[[ "$TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]'
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ env.TAG }}
+      - name: Verify tag and merge provenance
+        id: version
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXPECTED_SHA: ${{ github.event.client_payload.sha }}
+        run: |
+          git fetch origin main:refs/remotes/origin/main --tags
+          sha="$(git rev-parse HEAD)"
+          test "$sha" = "$(git rev-parse "refs/tags/${TAG}^{commit}")"
+          if [[ -n "$EXPECTED_SHA" ]]; then
+            test "$sha" = "$EXPECTED_SHA"
+          fi
+          python scripts/release/version_policy.py verify
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+  checks:
+    needs: resolve
+    uses: ./.github/workflows/ci.yml
+    with:
+      ref: ${{ needs.resolve.outputs.sha }}
+      expected-version: ${{ needs.resolve.outputs.version }}
+      artifact-name: release-dist-${{ needs.resolve.outputs.tag }}
+
+  publish:
+    needs: [resolve, checks]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ needs.resolve.outputs.sha }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-dist-${{ needs.resolve.outputs.tag }}
+          path: release-assets
+      - name: Recheck tag and exact tested distributions
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.resolve.outputs.tag }}
+          VERSION: ${{ needs.resolve.outputs.version }}
+        run: |
+          git fetch origin main:refs/remotes/origin/main --tags
+          test "$(git rev-parse HEAD)" = "$(git rev-parse "refs/tags/${TAG}^{commit}")"
+          python scripts/release/version_policy.py verify
+          python scripts/release/verify_dist.py --dist release-assets --expected-version "$VERSION" --verify-manifest --existing-tag "$TAG"
+      - name: Publish the verified CI bundle
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.resolve.outputs.tag }}
+          generate_release_notes: true
+          files: release-assets/*
+          fail_on_unmatched_files: true
+          overwrite_files: false

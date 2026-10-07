@@ -57,6 +57,7 @@ PYTHONPATH=src python3 examples/triggers/basic_execution.py
 - [功能与回归索引](docs/reference/feature-map.md) · [API 索引](docs/reference/api.md)
 
 完整目录见[用户手册](docs/index.md)。维护者设计记录位于 [design](design/README.md)。
+提交检查、PR 版本标签与发布流程见[版本、CI 与发布](docs/guides/versioning-and-releases.md)。
 
 本地预览文档：
 

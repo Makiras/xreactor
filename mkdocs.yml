@@ -37,6 +37,7 @@ nav:
       - 功能点与跨用例覆盖: guides/functional-points.md
       - 报告与运行产物: guides/verification-flow.md
       - 外部 asyncio 集成: guides/asyncio-and-pytest.md
+      - 版本、CI 与发布: guides/versioning-and-releases.md
   - 使用场景:
       - 流水输入与阶段重叠: guides/pipeline-examples.md
       - 可运行示例: examples.md

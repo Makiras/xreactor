@@ -10,6 +10,10 @@ XReactor 已形成单 XClock 调度域的事务验证流程。后续工作先完
 2. 补齐真实 DUT 的波形开销、长期运行内存和外部 asyncio 延迟基线。zero-copy、GIL release、owner thread 和 adaptive quantum 依据测量结果选择。
 3. 在安装完整依赖的 CI 环境验证 pytest-asyncio、aiohttp 和 FastAPI 的兼容性。
 
+包版本与基础发布 CI 已配置：PR 版本标签选择增量，合并后创建 tag，发布前检查
+native 回归、文档、源码包重建与隔离安装。流程和首次启用要求见
+[版本与发布](../../docs/guides/versioning-and-releases.md)。第三方兼容矩阵仍是独立工作。
+
 检查方法见[测试与性能要求](testing.md)。这些工作完善现有能力，不要求增加新的用户抽象。
 
 ## 后续能力扩展
