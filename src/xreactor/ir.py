@@ -124,7 +124,14 @@ def as_expr(value: Any) -> XExpr:
     return value if isinstance(value, XExpr) else ConstantExpr(value)
 
 
-def signal_expr(signal: Any) -> BoundSignalExpr:
+def signal_expr(signal: Any) -> XExpr:
+    """Reuse an IR node, or reference the original bound signal leaf.
+
+    A shared expression builder can receive a symbolic path from @xtrigger
+    or a live Bundle/XData leaf from an already bound interface.
+    """
+    if isinstance(signal, XExpr):
+        return signal
     from .signals import as_xdata
 
     return BoundSignalExpr(as_xdata(signal))

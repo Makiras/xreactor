@@ -1,32 +1,29 @@
 """Each EXPECT_ERROR line must be rejected by the draft's type checker."""
 
-from dataclasses import dataclass
-
-from xreactor import RisingEdge
-from xreactor.ir import SequenceSpec, XExpr
+from xreactor import Bundle, RisingEdge
+from xreactor.ir import SequenceSpec, XExpr, signal_expr
 from xreactor.triggers import CompiledTrigger
+from examples.coverage.declarative_protocol import Pin, ProtocolBundle
 
-from api import Bin, BoolSignal, xtrigger
-from example import ProtocolCoverage, ProtocolPins, roundtrip
+from api import Bin, xtrigger
+from example import ProtocolCoverage, roundtrip
 
 
-@dataclass(frozen=True)
-class OtherPins:
-    clock: BoolSignal
-    ready: BoolSignal
+class OtherBundle(Bundle):
+    ready: Pin
 
 
 @xtrigger()
-def other_ready(pins: OtherPins) -> XExpr:
-    return pins.ready
+def other_ready(pins: OtherBundle) -> XExpr:
+    return signal_expr(pins.ready)
 
 
-def invalid(pins: ProtocolPins, other: OtherPins, coverage: ProtocolCoverage) -> None:
+def invalid(pins: ProtocolBundle, other: OtherBundle, coverage: ProtocolCoverage) -> None:
     roundtrip.with_args(maximum="8")  # EXPECT_ERROR
     roundtrip.with_args(maxmum=8)  # EXPECT_ERROR
     roundtrip.with_args(8)  # EXPECT_ERROR
     roundtrip.with_args(maximum=8).bind(other)  # EXPECT_ERROR
-    coverage.bind(pins=other, sample=RisingEdge(other.clock))  # EXPECT_ERROR
+    coverage.bind(pins=other, sample=RisingEdge(pins.clock))  # EXPECT_ERROR
     coverage.roundtrip.count(other_ready)  # EXPECT_ERROR
     coverage.roundtrip.count(Bin.pattern(other_ready))  # EXPECT_ERROR
     coverage.roundtrip.count("within_four_cycles")  # EXPECT_ERROR

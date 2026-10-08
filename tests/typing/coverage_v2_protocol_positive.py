@@ -3,7 +3,7 @@ from typing import assert_type
 from xreactor import Transfer
 from xreactor.declarative import BinRule, BoundPoint, FieldRef, Fields, SignalBinding, wire
 from examples.coverage.declarative_protocol import (
-    CompletedTransaction, CycleSnapshot, ProtocolPins, ReadyPoint,
+    CompletedTransaction, CycleSnapshot, ProtocolBundle, ReadyPoint,
     RequestCycleCoverage, TransactionCollector, TransactionCoverage,
 )
 
@@ -17,7 +17,7 @@ assert_type(ReadyPoint.waited_two_then_accepted, BinRule[bool])
 assert_type(fields.select(lambda sample: sample.request.ready), FieldRef[bool])
 
 
-def bind_ready(pins: ProtocolPins) -> SignalBinding[bool]:
+def bind_ready(pins: ProtocolBundle) -> SignalBinding[bool]:
     return wire(fields.select(lambda sample: sample.request.ready), pins.request.ready)
 
 

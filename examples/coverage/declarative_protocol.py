@@ -20,6 +20,7 @@ from xreactor.declarative import (
     Bin, CoverGroup, CoverPoint, Cross, Fields, Iff, OverlapPolicy,
     covergroup, coverpoint, wire,
 )
+from xreactor.ir import signal_expr
 
 
 class Pin(Protocol):
@@ -29,26 +30,20 @@ class Pin(Protocol):
     def Set(self, value: int) -> None: ...
 
 
-@dataclass(frozen=True)
-class RequestPins:
+class RequestBundle(Bundle):
+    """Project field annotations over the existing live Bundle."""
+
     valid: Pin
     ready: Pin
     tag: Pin
     opcode: Pin
 
-    def bundle(self) -> Bundle:
-        return Bundle(valid=self.valid, ready=self.ready, tag=self.tag, opcode=self.opcode)
 
-
-@dataclass(frozen=True)
-class ResponsePins:
+class ResponseBundle(Bundle):
     valid: Pin
     ready: Pin
     tag: Pin
     data: Pin
-
-    def bundle(self) -> Bundle:
-        return Bundle(valid=self.valid, ready=self.ready, tag=self.tag, data=self.data)
 
 
 @dataclass(frozen=True)
@@ -73,17 +68,18 @@ class CycleSnapshot:
     response: ResponseSnapshot
 
 
-@dataclass(frozen=True)
-class ProtocolPins:
+class ProtocolBundle(Bundle):
     clock: object
-    request: RequestPins
-    response: ResponsePins
+    request: RequestBundle
+    response: ResponseBundle
 
-    def bundle(self) -> Bundle:
-        return Bundle(request=self.request.bundle(), response=self.response.bundle())
+    def __init__(self, clock: object, request: RequestBundle, response: ResponseBundle):
+        super().__init__(request=request, response=response)
+        # A clock may be an XClock or a MemoryBackend token, not an XData leaf.
+        self.clock = clock
 
     def capture(self, raw: BundleValue | None = None) -> CycleSnapshot:
-        raw = self.bundle().sample() if raw is None else raw
+        raw = self.sample() if raw is None else raw
         return CycleSnapshot(
             RequestSnapshot(bool(raw.request.valid.as_int()), bool(raw.request.ready.as_int()),
                             raw.request.tag.as_int(), raw.request.opcode.as_int()),
@@ -135,12 +131,14 @@ class RoundTripCoverage(CoverGroup[CycleSnapshot]):
 def tag_one_roundtrip(pins, *, maximum=4):
     """A bounded multi-cycle sample event, with explicit matching tag 1."""
     return Sequence(
-        Wait(pins.request.valid & pins.request.ready & (pins.request.tag == 1)),
-        Within(1, maximum, pins.response.valid & pins.response.ready & (pins.response.tag == 1)),
+        Wait(signal_expr(pins.request.valid) & signal_expr(pins.request.ready)
+             & (signal_expr(pins.request.tag) == 1)),
+        Within(1, maximum, signal_expr(pins.response.valid) & signal_expr(pins.response.ready)
+               & (signal_expr(pins.response.tag) == 1)),
     )
 
 
-def bind_pin_coverage(pins: ProtocolPins, *, strategy="native", maximum=4):
+def bind_pin_coverage(pins: ProtocolBundle, *, strategy="native", maximum=4):
     request = RequestCycleCoverage(instance="dut.request")
     request.bind(trigger=RisingEdge(pins.clock), strategy=strategy, fields=(
         wire(cycle_fields.select(lambda s: s.request.valid), pins.request.valid, source_id="dut.request.valid"),
@@ -255,9 +253,11 @@ class ToyResponder:
         else:
             self.clock = object()
             signal = _Signal
-        self.pins = ProtocolPins(self.clock,
-                                 RequestPins(*(signal(width) for width in (1, 1, 8, 2))),
-                                 ResponsePins(*(signal(width) for width in (1, 1, 8, 16))))
+        self.pins = ProtocolBundle(
+            self.clock,
+            RequestBundle(valid=signal(1), ready=signal(1), tag=signal(8), opcode=signal(2)),
+            ResponseBundle(valid=signal(1), ready=signal(1), tag=signal(8), data=signal(16)),
+        )
         self.pins.response.ready.Set(1)
         self.delays = {1: 3, 2: 1, 3: 1} if delays is None else dict(delays)
         self.drop, self.wrong = set(drop), set(wrong)
@@ -302,7 +302,7 @@ class ToyResponder:
 
 
 class RequestDriver(SignalDriver[tuple[int, int]]):
-    def __init__(self, pins: ProtocolPins):
+    def __init__(self, pins: ProtocolBundle):
         self.pins = pins
         super().__init__((pins.request.valid, pins.request.tag, pins.request.opcode), name="request")
 
@@ -350,7 +350,7 @@ async def run(*, engine="xcomm", strategy="native", maximum=4, cycles=12, delays
         request, roundtrip = bind_pin_coverage(toy.pins, strategy=strategy, maximum=maximum)
         transactions = TransactionCoverage(instance="dut.transactions")
         async with Execution(toy.backend, coverage=[request.runtime, roundtrip.runtime]) as execution:
-            live = toy.pins.bundle()
+            live = toy.pins
             monitor = SamplingMonitor(RisingEdge(toy.clock), capture=lambda _: toy.pins.capture(live.sample()),
                                       capacity=cycles + 4).start(execution)
             async with monitor:

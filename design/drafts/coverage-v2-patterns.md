@@ -20,16 +20,16 @@
 
 ## 从同一个时序定义理解 trigger 和 coverage
 
-候选接口中的 ProtocolPins 是具有符号运算类型信息的引脚视图，叶节点区分布尔和整数信号，并保留原生信号句柄。该视图在定义或绑定阶段使用，不进入逐拍 Python 热路径。它需要补全类型契约；当前运行示例只包含 W/U/Set 的 Pin 协议，还不能直接用于严格检查下列声明函数。
+ProtocolBundle 直接复用已有 Bundle，是项目对 request/response 字段的类型化声明；叶子仍为原始 XData。字段注解提供补全，signal_expr 复用既有 SignalExpr/BoundSignalExpr 建立表达式，不新增 BoolSignal/UIntSignal 或独立引脚容器。完整表达式类型语义补到公共 IR。已实现协议示例也使用 Bundle 子类，见[复用清单与能力缺口](trigger-bins/README.md)。
 
 假设一个接口同时最多只有一笔未完成请求，定义“请求握手后，接下来 1 至 4 拍出现响应握手”：
 
 ```python
 @xtrigger(sample=RisingEdge("clock"))
-def roundtrip(pins: ProtocolPins):
+def roundtrip(pins: ProtocolBundle):
     return Sequence(
-        Wait(pins.request.valid & pins.request.ready),
-        Within(1, 4, pins.response.valid & pins.response.ready),
+        Wait(signal_expr(pins.request.valid) & signal_expr(pins.request.ready)),
+        Within(1, 4, signal_expr(pins.response.valid) & signal_expr(pins.response.ready)),
     )
 ```
 
@@ -42,12 +42,12 @@ await roundtrip(pins)
 Coverage 使用相同定义持续累计完成次数。以下是拟议接口，没有实际导出：
 
 ```python
-class RoundTripPoint(TemporalCoverPoint[ProtocolPins]):
+class RoundTripPoint(TemporalCoverPoint[ProtocolBundle]):
     within_four_cycles = roundtrip
 
 
 @covergroup(schema_id="protocol.roundtrip")
-class ProtocolCoverage(SignalCoverGroup[ProtocolPins]):
+class ProtocolCoverage(SignalCoverGroup[ProtocolBundle]):
     roundtrip = RoundTripPoint()
 
 
@@ -62,16 +62,16 @@ coverage.bind(
 
 Point 的类属性给 bin 命名，Group 的类属性给 point 命名，`roundtrip` 对象引用说明匹配什么过程。用户不用重写时序表达式或手动给 bin 加计数，也不用为每个 bin 编写循环 await 的任务。
 
-`SignalCoverGroup[P]` 的 P 是类型化引脚组，可以容纳 clock 和 XData；当前 `CoverGroup[S]` 的 S 是不可变观测样本。两者采用明确的输入类型，避免把含有引脚对象的 dataclass 当作可手动 sample 的标量快照。候选名称可以调整，这个类型边界需要保留。既有值覆盖和 Python 事务 sample 路径继续使用 `CoverGroup[S]`。
+`SignalCoverGroup[P]` 的 P 是现有 Bundle、协议接口或 DUT 根对象；当前 `CoverGroup[S]` 的 S 是不可变观测样本。两者需要区分 live 输入与快照输入，但只增加声明/绑定分支，复用同一 CompiledGroup、CoreCoverGroup、collector、计数和报告。候选名称可以调整，不要求新建 runtime 或特定引脚容器。既有值覆盖和 Python 事务 sample 路径继续使用 `CoverGroup[S]`。
 
-`@xtrigger` 提供时序声明入口。其声明对象保存程序、参数和采样信息，绑定后才创建观察实例。覆盖编译器读取这份定义，不调用它的 await，也不接收已经 arm 的 watcher。装饰器的静态返回类型应明确区分声明对象与绑定后的 trigger，保留 ProtocolPins 的参数类型和 IDE 补全。
+`@xtrigger` 提供时序声明入口。其声明对象保存程序、参数和采样信息，绑定后才创建观察实例。覆盖编译器读取这份定义，不调用它的 await，也不接收已经 arm 的 watcher。装饰器的静态返回类型应明确区分声明对象与绑定后的 trigger，保留 ProtocolBundle 的参数类型和 IDE 补全。
 
 ## Bin 与 trigger 共用匹配定义
 
 Bin 与 trigger 在“什么条件或过程算命中”这一层可以使用同一份定义。覆盖声明允许直接引用 xtrigger，普通情况下自动登记为 normal、at_least=1 的 bin。以下仍是候选语法：
 
 ```python
-class RequestPoint(TemporalCoverPoint[ProtocolPins]):
+class RequestPoint(TemporalCoverPoint[ProtocolBundle]):
     read = read_accepted
     write = write_accepted
 ```
@@ -79,7 +79,7 @@ class RequestPoint(TemporalCoverPoint[ProtocolPins]):
 read_accepted 和 write_accepted 是已有 xtrigger 声明，包含明确的采样与事件策略。需要覆盖配置时再包装同一份定义：
 
 ```python
-class RepeatedRequestPoint(TemporalCoverPoint[ProtocolPins]):
+class RepeatedRequestPoint(TemporalCoverPoint[ProtocolBundle]):
     read = read_accepted
     write = Bin.pattern(write_accepted, at_least=10)
 ```
@@ -148,7 +148,7 @@ TemporalCoverPoint 表示过程事件，不需要伪造一个 bool 字段。Bin.
 
 表达式模式保留明确的事件策略：enter 统计进入，each_sample 统计每次成立，change 统计有效变化。Bin.pattern 复用声明中的策略并在展开结果中显示它；普通 Bin.values 不隐式套用默认 enter。Sequence/FSM 本身产生离散完成事件。
 
-FSM 有多个终态时，bin 必须通过声明引用选中要统计的终态，或明确声明统计全部终态。C++ 完成结果保留 terminal ID，不能丢弃后把成功与失败当作同一个含糊的命中。终态引用的具体 Python 语法随 FSM 声明接口一同细化。
+FSM 有多个终态时，bin 必须选中要统计的终态，或明确声明统计全部终态。当前先复用 FsmSpec/State.trigger 的字符串终态和 backend 的 ID 降低；不为 coverage 单建终态 DSL。C++ 完成结果保留 terminal ID，不能丢弃后把成功与失败当作同一个含糊的命中。
 
 ## 时序语义与采样条件
 

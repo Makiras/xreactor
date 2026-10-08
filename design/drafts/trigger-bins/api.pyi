@@ -1,8 +1,9 @@
 """Proposed signatures only. No runtime implementation or native support."""
 
-from typing import Callable, Concatenate, Final, Generic, Literal, ParamSpec, Self, TypeAlias, TypeVar, overload
+from typing import Callable, Concatenate, Generic, Literal, ParamSpec, Self, TypeAlias, TypeVar, overload
 
 from xreactor.coverage import BinKind
+from xreactor.declarative import CompiledGroup, PointDeclaration
 from xreactor.ir import FsmSpec, SequenceSpec, XExpr
 from xreactor.triggers import CompiledTrigger, ConditionMode, PhaseTrigger
 
@@ -10,16 +11,6 @@ P = TypeVar("P")
 A = ParamSpec("A")
 C = TypeVar("C", bound=type[object])
 Program: TypeAlias = XExpr | SequenceSpec | FsmSpec
-
-# Proposed signal-view leaves. Width/sign/runtime binding remain to implement.
-class BoolSignal(XExpr):
-    def __init__(self, source: object, *, source_id: str | None = None) -> None: ...
-class UIntSignal(XExpr):
-    def __init__(self, source: object, *, source_id: str | None = None) -> None: ...
-
-class Terminal: ...
-class AllTerminals: ...
-ALL_TERMINALS: Final[AllTerminals]
 
 class TriggerPattern(Generic[P]):
     def bind(self, pins: P, *, sample: PhaseTrigger | None = None) -> CompiledTrigger: ...
@@ -40,7 +31,7 @@ class Bin:
     def pattern(
         pattern: TriggerPattern[P], *, at_least: int = 1,
         kind: BinKind = BinKind.NORMAL,
-        terminals: tuple[Terminal, ...] | AllTerminals | None = None,
+        terminals: tuple[str, ...] | None = None, all_terminals: bool = False,
         overlap: bool = False, max_active: int | None = None,
     ) -> PatternBinRule[P]: ...
 
@@ -49,19 +40,16 @@ class BoundTemporalPoint(Generic[P]):
     @property
     def observations(self) -> int: ...
 
-class TemporalCoverPoint(Generic[P]):
+class TemporalCoverPoint(PointDeclaration, Generic[P]):
     @overload
     def __get__(self, instance: None, owner: type[object]) -> Self: ...
     @overload
     def __get__(self, instance: object, owner: type[object] | None = None) -> BoundTemporalPoint[P]: ...
 
-class CompiledSignalGroup(Generic[P]):
-    def explain(self) -> str: ...
-
 class SignalCoverGroup(Generic[P]):
     def __init__(self, *, instance: str) -> None: ...
     @classmethod
-    def compile(cls) -> CompiledSignalGroup[P]: ...
+    def compile(cls) -> CompiledGroup[P]: ...
     def bind(
         self, *, pins: P, sample: PhaseTrigger,
         strategy: Literal["native", "python", "auto"] = "native",

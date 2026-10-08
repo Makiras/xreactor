@@ -4,27 +4,48 @@
 
 **把 xtrigger 定义直接当成 bin 的匹配定义。Point 管 bins，Group 管 points；C++ 继续匹配和计数。** 下一轮用一个短协议示例贯穿接口、类型检查、原生编译和资源释放，先完成这条闭环。
 
+## 先复用现有组件
+
+新增方案先列出现有入口，再说明缺口。已有功能的命名、包装或类声明变化，不应产生另一份信号容器、时序 IR、匹配算法、计数器或报告实现。
+
+具体入口见[数据视图](../../../docs/guides/data.md)、[协议接口](../../../src/xreactor/interfaces.py)、[共享 IR](../../../src/xreactor/ir.py)、[覆盖 adapter](../../../src/xreactor/_coverage_runtime.py)及[现有声明编译器](../../../src/xreactor/declarative/_compiler.py)。
+
+| 职责 | 直接复用 | 确实需要补充的能力 |
+| --- | --- | --- |
+| 引脚组织、绑定与遍历 | data.py 的 Bundle、Field、bind/bind_tree/view_as、leaves | 项目可给 Bundle 子类添加字段注解；注解本身不自动增加形状校验 |
+| packed 信号视图 | PackedArray、PackedView、PackedLayout | 当前能力满足时直接使用，coverage 不另写切片布局 |
+| 底层信号与四态值 | signals.py 的 as_xdata/signal_width/signal_identity、events.LogicValue | 位宽和 signed 等规则补到共享 IR；保持 XData 身份，不加独立叶子包装 |
+| 符号与绑定表达式 | ir.py 的 SignalExpr、BoundSignalExpr、signal_expr | signal_expr 接受已有 XExpr 时原样返回，兼容 symbolic/live 两种输入 |
+| 时序表示与推进 | XExpr、SequenceSpec、FsmSpec，backend lowering，AdvanceSequence/AdvanceFsm | 完整程序引用进入每个 bin，保留完成数量与 FSM 终态；不建立第二套 pattern IR 或 VM |
+| 握手事件与事务观察 | ReadyValid/Decoupled.fire、SamplingMonitor、ReadyValidMonitor、Transfer、订阅 | phase 合适时直接使用已有事件；跨请求响应的动态关联另行讨论 |
+| 声明组织与审核 | declarative 的 PointDeclaration、MRO/冻结检查、CompiledGroup/explain/diff | 增加 pattern 类型分支与绑定检查，沿用同一编译产物和审查入口 |
+| 覆盖计数、报告与生命周期 | CoverGroupDef/CoreCoverGroup、_coverage_runtime、CoverageDatabase、Execution | 扩展现有 schema/adapter/native 描述符，继续使用唯一计数存储和报告 |
+
+TemporalCoverPoint、SignalCoverGroup 是候选声明入口，用来区分值分类与过程完成、快照输入与 live 输入；它们不建立另一套 runtime。TriggerDefinition/with_args 只补充现有 @xtrigger 的可读取元数据和参数冻结，内部仍保存原来的 Expr/Sequence/FSM。CompiledGroup 增加输入模式后继续复用，不能把现有 frozen sample 校验强套给 live Bundle。
+
+ReadyValid.fire 当前使用 DriveStable(clock) 与 EACH_SAMPLE。本例按 RisingStable 观察 DUT 的请求和响应，不能为了复用名称偷偷换 phase；相同阶段的握手消费者应直接使用 fire。示例的 CycleSnapshot/CompletedTransaction 是观测与业务解码类型，复用 BundleValue/Transfer 后才生成；不是另一个 live 信号容器。动态 tag collector 仍是本例的业务参考模型，不新增通用事务引擎。
+
 ## 用户最终写什么
 
 [example.py](example.py) 是完整的候选接口例子，核心部分如下：
 
 ```python
 @xtrigger()
-def roundtrip(pins: ProtocolPins, *, maximum: int = 4) -> SequenceSpec:
+def roundtrip(pins: ProtocolBundle, *, maximum: int = 4) -> SequenceSpec:
     return Sequence(
-        Wait(pins.request.valid & pins.request.ready),
-        Within(1, maximum, pins.response.valid & pins.response.ready),
+        Wait(signal_expr(pins.request.valid) & signal_expr(pins.request.ready)),
+        Within(1, maximum, signal_expr(pins.response.valid) & signal_expr(pins.response.ready)),
     )
 
 
-class RoundTripPoint(TemporalCoverPoint[ProtocolPins]):
+class RoundTripPoint(TemporalCoverPoint[ProtocolBundle]):
     within_four_cycles = roundtrip
     repeated = Bin.pattern(roundtrip, at_least=10)
     within_eight_cycles = roundtrip.with_args(maximum=8)
 
 
 @covergroup(schema_id="protocol.patterns")
-class ProtocolCoverage(SignalCoverGroup[ProtocolPins]):
+class ProtocolCoverage(SignalCoverGroup[ProtocolBundle]):
     roundtrip = RoundTripPoint()
 
 
@@ -35,9 +56,9 @@ count = coverage.roundtrip.count(RoundTripPoint.within_four_cycles)
 
 类属性名就是报告里的 point/bin 名称。内部引用使用对象、函数参数和引脚属性路径；`schema_id`、`instance` 等外部标识仍用字符串。无需 Enum，也不新增一套 Sequence 或循环 await 代码。
 
-这个 roundtrip 只适合最多一笔未完成请求；并发请求的身份关联仍单独讨论。当前示例的 typed signal leaves 是待实现的引脚视图，不等于现有只提供 W/U/Set 的 Pin 协议。
+这个 roundtrip 只适合最多一笔未完成请求；并发请求的身份关联仍单独讨论。ProtocolBundle 是已运行示例中的 Bundle 子类，字段注解使用描述 W/U/Set 的 Pin 协议，叶子仍是原始 XData，不引入运行时信号包装。
 
-候选接线方式是在搭建引脚组时一次性包装真实信号，例如 `BoolSignal(dut.req_valid)`、`UIntSignal(dut.req_opcode)`；视图同时保留原生句柄和表达式类型，不在每拍创建。绑定检查 Bool 的物理宽度为 1、UInt 的真实位宽和原生来源。优先从后端元数据取得稳定端口身份，缺失时提供 source_id 或显式 observer contract，不能用逻辑字段路径冒充真实接线身份。这些外部标识与已实现绑定遵循相同原则。
+接线直接使用 `RequestBundle(valid=dut.req_valid, ready=dut.req_ready, ...)`，继承现有 Bundle 构造和 signal identity 规则；有现成 Bundle/ReadyValid/DUT 根对象时继续使用它们，不要求再创建特定容器。绑定复用 signal_width 和 native 来源检查，表达式类型进入既有 IR。稳定来源身份通过已有绑定元数据/source_id/observer contract 描述，不能用逻辑字段路径冒充真实接线身份。
 
 ## 把容易含糊的规则先确定
 
@@ -69,7 +90,7 @@ Bin.pattern 的 max_active 未传时保留为 None：non-overlap 在编译时解
 同一个 point 内以下声明必须拒绝：
 
 ```python
-class AmbiguousPoint(TemporalCoverPoint[ProtocolPins]):
+class AmbiguousPoint(TemporalCoverPoint[ProtocolBundle]):
     a = roundtrip
     b = roundtrip
 ```
@@ -77,7 +98,7 @@ class AmbiguousPoint(TemporalCoverPoint[ProtocolPins]):
 因为 `AmbiguousPoint.a is AmbiguousPoint.b`，count(Point.a) 无法知道想查哪一个。需要两份计数时采用不同配置对象：
 
 ```python
-class ExplicitPoint(TemporalCoverPoint[ProtocolPins]):
+class ExplicitPoint(TemporalCoverPoint[ProtocolBundle]):
     once = roundtrip
     ten = Bin.pattern(roundtrip, at_least=10)
 ```
@@ -87,35 +108,30 @@ class ExplicitPoint(TemporalCoverPoint[ProtocolPins]):
 Point 子类继续增加或覆盖同名 bin，Group 子类继续以 Point 子类替换槽位，沿用当前 MRO、冻结和冲突检查。覆盖结果不修改基类。若子类把直接 trigger 改成 Bin.pattern，Python 静态工具会认为属性类型发生变化；在可替换槽位标一次公共类型即可：
 
 ```python
-class BasePoint(TemporalCoverPoint[ProtocolPins]):
-    done: PatternBin[ProtocolPins] = roundtrip
+class BasePoint(TemporalCoverPoint[ProtocolBundle]):
+    done: PatternBin[ProtocolBundle] = roundtrip
 
 
 class RepeatedPoint(BasePoint):
-    done: PatternBin[ProtocolPins] = Bin.pattern(roundtrip, at_least=10)
+    done: PatternBin[ProtocolBundle] = Bin.pattern(roundtrip, at_least=10)
 ```
 
 普通新增 bins 不需要这层注解。完整继承正例已列入类型草稿。类体内放错输入根类型、多个父类冲突、重复引用等仍需要定义编译检查；Python 的普通泛型基类无法自动约束所有子类属性，不能只靠类型检查器承诺全部安全。
 
 ## FSM 的 bin 如何选终态
 
-终态使用具名对象引用，不要求 Enum：
+先沿用现有 State.trigger 和 FsmEvent 的字符串终态，不为 coverage 新建 Terminal/AllTerminals 类型：
 
 ```python
-class RequestResult:
-    success = Terminal()
-    timeout = Terminal()
-
-
-# FSM 状态中的 .trigger(RequestResult.success) 引用同一对象。
-class ResultPoint(TemporalCoverPoint[ProtocolPins]):
-    success = Bin.pattern(request_fsm, terminals=(RequestResult.success,))
-    timeout = Bin.pattern(request_fsm, terminals=(RequestResult.timeout,))
+# 现有 FSM 状态用 .trigger("success")、.trigger("timeout") 定义终态。
+class ResultPoint(TemporalCoverPoint[ProtocolBundle]):
+    success = Bin.pattern(request_fsm, terminals=("success",))
+    timeout = Bin.pattern(request_fsm, terminals=("timeout",))
 ```
 
-需要扩展现有 FsmTransitionSpec/State.trigger，让 Terminal 对象可以降低为稳定 ID。编译器检查终态确实存在于该程序；两个 bins 各自观察完整 FSM，并仅累计所选终态。终态过滤不改变 FSM 运行：到达未选终态也结束本次匹配。
+复用 FsmSpec 中现有终态表及 backend 的稳定 ID 降低，编译器检查选择的终态存在；C++ 不能丢弃完成时的 terminal ID。两个 bins 各自观察完整 FSM，并仅累计所选终态。终态过滤不改变 FSM 运行：到达未选终态也结束本次匹配。若以后改善终态补全，应在公共 FSM 声明中统一改进，再由 coverage 直接复用。
 
-只有一个终态的 FSM 可以直接作为 bin；多个终态必须显式选择，或传 `terminals=ALL_TERMINALS`。Expr/Sequence 禁止终态选项。现有 FSM 状态字符串接口暂时保留，本轮先解决 bin 的完整程序与终态选择。
+只有一个终态的 FSM 可以直接作为 bin；多个终态必须显式选择，或传 `all_terminals=True`。终态集合不能为空，不能同时选择集合和全部终态。Expr/Sequence 禁止终态选项。本轮先解决 bin 的完整程序与终态选择。
 
 ## 编译分两步，运行仍在 C++
 
@@ -147,7 +163,7 @@ C++ 继续复用 AdvanceSequence/AdvanceFsm；Expr 的事件模式也统一处�
 
 ## 表达式类型先立规则，再降低
 
-引脚视图提供补全，IR 负责真实类型。类型至少包含 bool/bits、width、signed 和未知位表示；规范化和 Python/native 执行都读取同一类型。建议本轮避免隐式模拟整套 SystemVerilog 上下文推导：
+Bundle 字段注解提供补全，既有 IR 扩展后负责表达式真实类型。直接读取 XData/Field/PackedView 中已有位宽；缺失的 signed 和转换信息进入公共表达式类型，不通过新建物理信号包装补齐。未知值复用 LogicValue 的 aval/bval/width 表示。规范化和 Python/native 执行读取同一类型。建议本轮避免隐式模拟整套 SystemVerilog 上下文推导：
 
 | 场景 | 拟议规则与审核例子 |
 | --- | --- |
@@ -169,7 +185,7 @@ C++ 继续复用 AdvanceSequence/AdvanceFsm；Expr 的事件模式也统一处�
 
 | 批次 | 修改位置 | 必须看到的结果 |
 | --- | --- | --- |
-| 1. 声明与类型闭环 | decorators.py、triggers.py、类型化引脚视图、declarative 的 declarations/compiler；新增明确的 pattern IR/计划 | @xtrigger 返回真实定义对象；直接 bins/with_args/继承编译和 explain 可审核；尚未具备原生能力时 bind 明确拒绝 |
+| 1. 声明与类型闭环 | decorators.py、triggers.py、已有 Bundle/IR、declarative 的 declarations/compiler | @xtrigger 返回真实定义对象；直接 bins/with_args/继承编译和 explain 可审核；尚未具备原生能力时 bind 明确拒绝；不新增信号容器或时序 IR |
 | 2. 原生资源生命周期 | 隔离 xcomm 的 xexpr/xtrigger 头文件及实现、SWIG；backend 程序缓存 | 长 Execution 资源回落；共享观察不受取消影响；非法/陈旧 root 和 handle 拒绝；失败路径无泄漏 |
 | 3. 类型规则与公共降低 | ir.py 或拆出的类型模块、backend、隔离 xcomm 的表达式实现 | 冻结类型规则；宽度、符号、转换、未知值的 Python/native 边界结果一致；trigger 和 coverage 走同一个 lowering |
 | 4. 每 bin 完整程序 | coverage schema、_coverage_runtime.py、声明 runtime；隔离 xcomm 的 coverage 描述符与计数路径 | 每个 bin 支持 Expr/完整 Sequence/FSM 终态，C++ 持续计数，无虚构 signal、无循环 await |
@@ -194,4 +210,4 @@ node /tmp/xreactor-class-coverage-tools/node_modules/pyright/index.js --project 
 
 第二条应失败，并在每个 EXPECT_ERROR 行报告错误。没有标记的错误也要修正，不能只统计错误总数。
 
-2026-10-08 使用 Pyright 1.1.414 验证：正例及 stub 共两个文件零错误、零警告；12 个标记负例全部拒绝，且没有非预期诊断。验证记录位于 `/tmp/xreactor-coverage-v2-ob2uhbua/trigger-bins-verification.json`。这些结果仅支持接口的静态可表达性，不代替未来实现测试。
+2026-10-08 使用 Pyright 1.1.414 验证接口的严格正例及 12 个标记负例。后续复用修订的实际结果单独保存在 `/tmp/xreactor-coverage-v2-ob2uhbua/coverage-reuse-verification.json`；此前 `/tmp/xreactor-coverage-v2-ob2uhbua/trigger-bins-verification.json` 记录属于修订前版本。类型结果不代替未来完整 pattern bin 实现测试。

@@ -18,7 +18,9 @@ class ReadyPoint(CoverPoint[bool]):
 
 ## 类型化引脚组与覆盖模型绑定
 
-示例用 `RequestPins`、`ResponsePins` 和 `ProtocolPins` 明确列出引脚属性，叶节点采用具有 W、U、Set 方法的 Pin 协议。它们可以装载真实 XData；`bundle()` 把它们组合为现有框架的 Bundle。
+示例的 `RequestBundle`、`ResponseBundle` 和 `ProtocolBundle` 直接继承现有 Bundle，只添加项目字段注解。叶节点的 Pin 是具有 W、U、Set 方法的静态协议，实际对象仍是原始 XData；不再定义额外的 Pins 容器或进行 Pins→Bundle 转换。clock 作为采样源元数据保存在 ProtocolBundle，允许使用 XClock 或 MemoryBackend token，不加入要 sample/drive 的数据字段。
+
+Bundle 的字段注解提供补全，不会自动产生形状检查或表达式运算。真实绑定、遍历、sample 和 drive 仍由已有 Bundle 完成。需要表达式时使用已有 `signal_expr`，其接受符号节点时原样返回，从而同一个表达式构造可以用于 @xtrigger 和已绑定的原始信号。
 
 逻辑观测使用 frozen dataclass `CycleSnapshot`，包含嵌套的 request 和 response。绑定关系在同一处显式列出：
 
@@ -57,9 +59,11 @@ Sample 字段、引脚组属性和 point 引用都有明确名称。source_id �
 @xtrigger(sample=RisingEdge("clock"))
 def tag_one_roundtrip(pins, *, maximum=4):
     return Sequence(
-        Wait(pins.request.valid & pins.request.ready & (pins.request.tag == 1)),
+        Wait(signal_expr(pins.request.valid) & signal_expr(pins.request.ready)
+             & (signal_expr(pins.request.tag) == 1)),
         Within(1, maximum,
-               pins.response.valid & pins.response.ready & (pins.response.tag == 1)),
+               signal_expr(pins.response.valid) & signal_expr(pins.response.ready)
+               & (signal_expr(pins.response.tag) == 1)),
     )
 
 completed.bind(
@@ -85,7 +89,7 @@ Sequence 是这个 group 的采样条件。相邻 transition 是 bin 的 matcher
 ## Monitor 事务流与覆盖模型绑定
 
 ```python
-live = pins.bundle()
+live = pins
 monitor = SamplingMonitor(
     RisingEdge(pins.clock),
     capture=lambda _: pins.capture(live.sample()),
