@@ -66,6 +66,30 @@ Point 的类属性给 bin 命名，Group 的类属性给 point 命名，`roundtr
 
 `@xtrigger` 提供时序声明入口。其声明对象保存程序、参数和采样信息，绑定后才创建观察实例。覆盖编译器读取这份定义，不调用它的 await，也不接收已经 arm 的 watcher。装饰器的静态返回类型应明确区分声明对象与绑定后的 trigger，保留 ProtocolPins 的参数类型和 IDE 补全。
 
+## Bin 与 trigger 共用匹配定义
+
+Bin 与 trigger 在“什么条件或过程算命中”这一层可以使用同一份定义。覆盖声明允许直接引用 xtrigger，普通情况下自动登记为 normal、at_least=1 的 bin。以下仍是候选语法：
+
+```python
+class RequestPoint(TemporalCoverPoint[ProtocolPins]):
+    read = read_accepted
+    write = write_accepted
+```
+
+read_accepted 和 write_accepted 是已有 xtrigger 声明，包含明确的采样与事件策略。需要覆盖配置时再包装同一份定义：
+
+```python
+class RepeatedRequestPoint(TemporalCoverPoint[ProtocolPins]):
+    read = read_accepted
+    write = Bin.pattern(write_accepted, at_least=10)
+```
+
+所以 Bin.pattern 是可选的覆盖配置，不强迫用户为每个时序条件多写一层包装。编译器按 point 槽位和属性名登记覆盖身份；同一个 xtrigger 被多个 bin 引用时，不把名称、计数或 owner 写回共享定义。
+
+Trigger 使用匹配结果通知等待者；bin 使用匹配结果累计覆盖计数，并附带阈值、normal/ignore/illegal 等策略。Point 组织相关 bins，Group 组织 points 和 Cross。执行层共用 matcher，声明层保留可审核的归属关系。
+
+普通 Bin.values/range/mask 也可以降低为共用的表达式匹配，不另建覆盖专用时序算法。但“每次采样成立”与“进入条件时”是两种策略：ready 连续三拍为 1，值 bin 计 3；enter trigger 只通知 1 次。直接引用 xtrigger 时保留其显式事件策略，编译结果必须显示它，不能把普通值 bin 的逐 sample 语义改成默认 enter。
+
 ## 当前 C++ 已经有的关联
 
 本机 xcomm 源码在 `/home/xyl/picker/dependence/xcomm`，隔离 binding 构建在 `/tmp/xreactor-coverage-native-build`，coverage ABI 为 3。实现关系如下：
