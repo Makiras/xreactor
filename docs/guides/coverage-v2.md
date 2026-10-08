@@ -144,6 +144,8 @@ python3 -B scripts/check_coverage_v2_types.py \
 
 当前优先范围是长 Execution 内的程序回收、每个 bin 的完整时序程序，以及表达式类型语义。程序与观察实例的拆分程度由实现需要决定；统一诊断和规模优化后排，字段捕获与动态 key 关联继续讨论。
 
+下一步分支修改见[具体接口与分批实施方案](../../design/drafts/trigger-bins/README.md)，附有可严格类型检查的接口草稿。普通 bin 直接引用 xtrigger 定义，需要阈值等配置时才使用 Bin.pattern；参数绑定、重复引用、继承、采样和终态选择都有明确规则。
+
 草稿中的 `Bin.pattern`、`TemporalCoverPoint`、`SignalCoverGroup` 和新 C++ 接口尚未实现。本文已验证的类声明接口和协议示例仍使用当前 ABI v3；已有验证结果不包含这些新增能力。
 
 ## 当前边界

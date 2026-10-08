@@ -43,7 +43,7 @@ Coverage 使用相同定义持续累计完成次数。以下是拟议接口，�
 
 ```python
 class RoundTripPoint(TemporalCoverPoint[ProtocolPins]):
-    within_four_cycles = Bin.pattern(roundtrip)
+    within_four_cycles = roundtrip
 
 
 @covergroup(schema_id="protocol.roundtrip")
@@ -85,6 +85,8 @@ class RepeatedRequestPoint(TemporalCoverPoint[ProtocolPins]):
 ```
 
 所以 Bin.pattern 是可选的覆盖配置，不强迫用户为每个时序条件多写一层包装。编译器按 point 槽位和属性名登记覆盖身份；同一个 xtrigger 被多个 bin 引用时，不把名称、计数或 owner 写回共享定义。
+
+下一步如何修改临时分支，具体接口、类型检查草稿及分批验收见[分支实施方案](trigger-bins/README.md)。其中补充了参数绑定、采样冲突、重复引用、继承和 FSM 终态选择的规则。类型草稿不提供运行时实现。
 
 Trigger 使用匹配结果通知等待者；bin 使用匹配结果累计覆盖计数，并附带阈值、normal/ignore/illegal 等策略。Point 组织相关 bins，Group 组织 points 和 Cross。执行层共用 matcher，声明层保留可审核的归属关系。
 
@@ -154,11 +156,11 @@ FSM 有多个终态时，bin 必须通过声明引用选中要统计的终态，
 
 一个时钟域内每个匹配实例每次采样最多推进一步。因此 Within 的距离是采样间隔，Within(0, 4) 也不表示同拍执行第二步。每拍采样时，这个距离才对应硬件周期；稀疏事件采样时应按事件间隔解释。原生 elapsed_cycles 使用绑定时钟计数，不能用稀疏 sample 次数替代。
 
-所有表达式复用已有已知性判断：Wait 遇到未知条件不启动，Next 视为失配，Within 继续计时但未知条件不完成，Hold 中断连续保持。不能为了 coverage 另写一套与 trigger 不一致的步骤语义。条件未知诊断和普通值 point 的 unknown 计数需要分别说明，实施前冻结字段和聚合方式。
+步骤保留已有未知条件处理：Wait 遇到未知条件不启动，Next 视为失配，Within 继续计时但未知条件不完成，Hold 中断连续保持。不能为了 coverage 另写一套与 trigger 不一致的步骤语义。表达式自身的已知性随 typed IR 一起规范：当前实现保守检查依赖信号，新按位运算能够消去未知位时应读取运算结果的已知位，trigger/coverage 同步采用同一规则，见[类型提案](trigger-bins/README.md)。条件未知诊断和普通值 point 的 unknown 计数需要分别说明，实施前冻结字段和聚合方式。
 
 group/point gate 关闭时抑制本次匹配并清除对应历史；reset/abort 在推进前生效，阻断跨复位拼接。各 bin 的窗口、重叠策略、活跃上限和终态选择必须可审核，不能从引擎实现中隐式推断。
 
-候选并发策略先推进旧实例，再处理新起点。默认最多一份活跃匹配；开启重叠时必须提供有界 max_active。旧实例完成释放容量后允许同拍启动新实例，每份实例仍最多推进一步。容量耗尽报错并标记采集不完整，不能悄悄丢弃起点。这个策略属于新 pattern 观察契约，不声称与 ABI v3 的所有重新启动细节相同。
+本轮沿用已有 AdvanceCoverageAttempts 的重新启动顺序。默认 non-overlap、最多一份活跃匹配；采样开始时已有匹配，则本次只推进它，即使完成，也到下次采样才允许新起点。overlap 模式先推进旧实例，再检查本次的新起点，必须提供有界 max_active。每份实例每次采样最多推进一步；容量耗尽报错并标记采集不完整，不能悄悄丢弃起点。不额外引入同拍重新启动的新策略。
 
 ## Cross 必须有同一份观测上下文
 
@@ -169,6 +171,8 @@ group/point gate 关闭时抑制本次匹配并清除对应历史；reset/abort 
 - 共享同一 sample 的值 points 继续按当前规则 Cross。
 - 共享同一完成记录的事务属性可以 Cross；同拍完成两笔事务时分别统计。
 - 独立 pattern 的 Cross 不隐式按同拍配对。需要先声明共同的过程或关联上下文，编译器拒绝上下文不明确的 Cross。
+
+当前三项交付中不实现新的完成上下文。因此初版直接拒绝包含 TemporalCoverPoint 的 Cross；现有值 points 和 Python 已完成事务 sample 的 Cross 继续使用。不能用“恰好同拍”绕过这个检查。
 
 例如统计“读请求的延迟”时，需要捕获请求起点的 opcode，和同一请求完成时计算出的 latency 一起分类。不能在响应拍重新读取已经变成下一笔请求的 opcode。C++ 完成上下文必须支持这种字段取值，Python 不应为此逐拍介入。
 
@@ -267,4 +271,4 @@ keyed 模式和广播式时序匹配是两种明确语义：一个响应完成�
 
 字段捕获、动态 key 关联及原生完成记录待用例和语义进一步明确后，再单独确定实现范围。
 
-本次变更只更新设计和已有指南的入口。尚未实现 Bin.pattern、TemporalCoverPoint、SignalCoverGroup 或新的 C++ ABI；前一轮 944 项通过记录仍属于已实现实验，不作为本设计新增能力的验证结果。
+本设计配有接口和严格类型检查草稿，尚未实现 Bin.pattern、TemporalCoverPoint、SignalCoverGroup 或新的 C++ ABI；前一轮 944 项通过记录仍属于已实现实验，不作为本设计新增能力的验证结果。
