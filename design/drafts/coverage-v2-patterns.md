@@ -2,7 +2,21 @@
 
 状态：讨论稿，2026-10-08，目标接口尚未实现。设计与代码实验位于 `/tmp/xreactor-coverage-v2-ob2uhbua/xreactor` 的 `coverage-v2` 分支。本文更新时序覆盖方向；现有运行示例仍以[实验指南](../../docs/guides/coverage-v2.md)为准。
 
-**同一份时序定义可以用于等待、持续计数或生成观测记录。C++ 负责连续采样、时序推进和计数；Python 负责类声明、类型检查、绑定和报告。** 新设计按这些目标向 xcomm 提出引擎需求，包含每个 bin 的完整时序程序和原生事务关联。现有 ABI v3 用来说明实现起点。
+**同一份时序定义可以用于等待、持续计数或生成观测记录。C++ 负责连续采样、时序推进和计数；Python 负责类声明、类型检查、绑定和报告。** 新设计按覆盖语义向 xcomm 提出引擎需求，现有 ABI v3 用来说明实现起点。当前交付范围与后续讨论项按下面的优先级区分。
+
+## 当前范围
+
+当前优先推进三项：
+
+1. **长 Execution 内的程序回收**：程序不再被使用后，其表达式节点、常量及缓存可以安全释放；仍在使用同一程序的观察者继续运行。
+2. **每个 bin 的完整时序程序**：独立支持 Expr 事件策略、完整 Sequence 和选定 FSM 终态，复用已有时序语义。
+3. **完整的表达式类型语义**：明确位宽、signed/unsigned、cast、扩展、截断、运算结果和未知值规则，再使 Python/native 对齐。
+
+“程序与观察实例彻底分离”降为内部实现选择，不作为单独的公共 API 或大重构交付。需要保证的是不同观察者的计数、历史和取消互不干扰；当前已有 MatchState 隔离。为了安全回收、复用而做多少拆分，由实际实现决定。
+
+统一过程诊断、大规模执行索引及专项规模优化后排。基本的非法定义报错、状态上限和资源清理仍属于上述功能的正确性要求。
+
+字段捕获与动态 key 关联保留为待讨论项，不列入当前三项交付。下面相关章节描述可能的能力目标，不能据此推断本轮必须实现原生事务引擎。
 
 ## 从同一个时序定义理解 trigger 和 coverage
 
@@ -136,14 +150,13 @@ group/point gate 关闭时抑制本次匹配并清除对应历史；reset/abort 
 
 ## 向 C++ 引擎提出的需求
 
-建议引入可独立编译的 PatternProgram 和可独立注册的 Observer。以下名称是接口契约草图：
+PatternProgram 与 Observer 是一种可选的内部组织方案。以下名称用于讨论职责，不要求当前交付新增全部接口，也不要求先完成彻底分离再实现覆盖能力：
 
 ```text
 CompilePattern(program_ir, bindings) -> ProgramHandle
 Observe(program, observation_options, consumer) -> ObserverHandle
 AttachCoverage(observer, coverage_plan)
 SnapshotCoverage(observer)
-InspectPattern(observer)
 ResetObserver(observer, counters)
 Disarm(observer)
 ```
@@ -168,9 +181,24 @@ Disarm(observer)
 
 ## 原生事务关联与捕获
 
+状态：待讨论，不属于当前三项交付。
+
 多笔请求并发时，简单的 Wait(request)/Within(response) 会把任意响应当作结束条件。目标引擎需要按动态 key 关联，而不仅仅保存多份相同条件的进度。
 
-以 tag 接口为例，C++ 需要执行：
+例如观察到下面的实际握手：
+
+| 周期 | 请求 | 响应 |
+| --- | --- | --- |
+| 10 | tag=1，read | 无 |
+| 11 | tag=2，write | 无 |
+| 12 | 无 | tag=2 |
+| 15 | 无 | tag=1 |
+
+字段捕获就是在第 10 拍保存 tag=1、read、起始周期=10，避免第 15 拍重新读取已经改变的请求引脚。动态 key 关联就是用响应携带的 tag 找回对应请求：第 12 拍找到 write，延迟 1；第 15 拍找到 read，延迟 5。tag 的具体数值来自运行中的硬件，不能只在定义里写死 tag==1。
+
+只有需要起点字段、请求响应延迟或多笔未完成事务配对时，才需要这些能力。固定条件的时序识别可以直接使用现有 Sequence/FSM，不必为了统计一个过程引入事务关联。
+
+若后续选择原生实现，C++ 需要执行：
 
 1. 请求 valid & ready 时捕获 tag、opcode、起始时钟计数，登记有界 pending 状态。
 2. 响应 valid & ready 时按 tag 查找对应状态，只完成该 tag 的请求。
@@ -205,15 +233,14 @@ keyed 模式和广播式时序匹配是两种明确语义：一个响应完成�
 
 ## 实施与验证顺序
 
-目标包含完整模式和原生事务能力，实施可以分批验证：
+按当前范围推进程序生命周期、表达式类型规则和独立 pattern bins。三项可以分别评审；程序内部抽象只做实际需要的拆分，不设“先重构整个观察引擎”的前置阶段。
 
-1. 提取现有共享程序与观察接口，保持已有 trigger 和 coverage 行为；验证共享定义、独立状态、通知与计数不同用途。
-2. 实现 TemporalCoverPoint、Bin.pattern 和新 coverage 描述符，覆盖完整 Sequence、表达式事件策略及 FSM 终态。
-3. 实现捕获上下文、按 key 关联和完成字段分类，复用 TransactionCoverage 的值 bins 与 Cross。
-4. 完成类型补全、编译解释、契约差异和端到端差分，再测量真实 DUT 吞吐。
+- 程序回收验证长 Execution 中反复创建与释放程序的资源增长，同时核对共享程序的活动观察者不受影响、旧句柄不能作用于新资源。
+- 类型语义验证负数、边界值、不同位宽、signed/unsigned、cast、扩展、截断及未知值的 Python/native 一致性。
+- 每个 bin 的时序验证完成 tick、终态、窗口边界、同拍多个完成、gate/abort、reset、取消和容量行为，确保历史与计数按实例隔离。
 
-验收关注同 trace 的 Python/native 匹配结果、完成 tick、计数、终态和捕获值；特别覆盖同拍多个完成、窗口边界、未知条件、gate/abort、tag 复用、超时、reset、取消和容量耗尽。测试必须核对程序共享时状态不共享。
+普通 count 命中继续留在 C++，不增加逐次 Python 回调或 RunUntil 返回。这属于当前执行方式的要求，不扩展为本轮大规模索引、统一过程轨迹或完整性能矩阵项目。
 
-性能验收要求普通 count 命中不增加 Python 回调和 RunUntil 返回次数；原生事务覆盖不逐拍构造 Python 快照。Monitor 主动要求逐拍记录时，其交互成本单独测量。声明编译、原生注册、热态推进、快照及释放分别计时，不能把合成基准倍数直接视为真实 DUT 加速。
+字段捕获、动态 key 关联及原生完成记录待用例和语义进一步明确后，再单独确定实现范围。
 
 本次变更只更新设计和已有指南的入口。尚未实现 Bin.pattern、TemporalCoverPoint、SignalCoverGroup 或新的 C++ ABI；前一轮 944 项通过记录仍属于已实现实验，不作为本设计新增能力的验证结果。

@@ -142,6 +142,8 @@ python3 -B scripts/check_coverage_v2_types.py \
 
 后续设计更新见[共享时序程序与 C++ 执行草稿](../../design/drafts/coverage-v2-patterns.md)。目标是复用 xtrigger 的 Expr/Sequence/FSM 定义，让 trigger 通知、coverage 持续计数和观测记录各自保存运行状态；每个 bin 的完整模式、字段捕获、按 key 关联和完成上下文都可以向 C++ 引擎提出能力需求。
 
+当前优先范围是长 Execution 内的程序回收、每个 bin 的完整时序程序，以及表达式类型语义。程序与观察实例的拆分程度由实现需要决定；统一诊断和规模优化后排，字段捕获与动态 key 关联继续讨论。
+
 草稿中的 `Bin.pattern`、`TemporalCoverPoint`、`SignalCoverGroup` 和新 C++ 接口尚未实现。本文已验证的类声明接口和协议示例仍使用当前 ABI v3；已有验证结果不包含这些新增能力。
 
 ## 当前边界
