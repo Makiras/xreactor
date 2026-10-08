@@ -78,6 +78,8 @@ completed.bind(
 
 Sequence 是这个 group 的采样条件。相邻 transition 是 bin 的 matcher。两者的职责明确区分；当前 API 尚未提供每个 bin 独立声明任意 Sequence/FSM 的能力。这个固定 tag 的 Sequence 也不承担任意动态 tag 的事务关联。
 
+后续[共享时序程序设计](../../design/drafts/coverage-v2-patterns.md)将每个 bin 复用 xtrigger 模式、原生捕获及动态 key 关联列为 C++ 扩展需求。目标接口按覆盖语义设计；本例展示的 ABI v3 能力是实现起点。
+
 绑定导出包含时序程序、采样阶段和窗口参数。改变 Within 的 maximum 会改变采样契约，旧报告与新窗口的报告不能合并；仅改变 Python/native 执行策略不会改变同一采样契约。无法序列化的 Python predicate 等来源要求显式的项目观察契约。
 
 ## Monitor 事务流与覆盖模型绑定

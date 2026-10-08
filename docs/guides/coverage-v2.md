@@ -138,6 +138,12 @@ python3 -B scripts/check_coverage_v2_types.py \
 
 本次产物位于 `/tmp/xreactor-coverage-v2-ob2uhbua/artifacts/protocol-{memory,python,native,window2}/`。完整测试记录为 `/tmp/xreactor-coverage-v2-ob2uhbua/protocol-full-tests.txt`。
 
+## 共享时序程序的设计方向
+
+后续设计更新见[共享时序程序与 C++ 执行草稿](../../design/drafts/coverage-v2-patterns.md)。目标是复用 xtrigger 的 Expr/Sequence/FSM 定义，让 trigger 通知、coverage 持续计数和观测记录各自保存运行状态；每个 bin 的完整模式、字段捕获、按 key 关联和完成上下文都可以向 C++ 引擎提出能力需求。
+
+草稿中的 `Bin.pattern`、`TemporalCoverPoint`、`SignalCoverGroup` 和新 C++ 接口尚未实现。本文已验证的类声明接口和协议示例仍使用当前 ABI v3；已有验证结果不包含这些新增能力。
+
 ## 当前边界
 
 这轮完成了基础声明、装饰器、类型化字段路径、继承和片段、模型审核、运行绑定及现有 native engine 接入。候选设计中的 `plan(backend)`、强类型 Enum 信号解码、任意 extractor、复杂 bin 时序 DSL 和编辑器交互体验仍未完成。
