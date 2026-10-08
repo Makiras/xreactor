@@ -30,7 +30,7 @@ xreactor-coverage-report = "xreactor.coverage_report:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-xreactor = ["templates/*.html", "templates/*.css"]
+xreactor = ["templates/*.html", "templates/*.css", "py.typed"]
 
 [tool.setuptools_scm]
 fallback_version = "0.1.0.dev0"
