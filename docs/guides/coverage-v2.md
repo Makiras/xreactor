@@ -112,9 +112,11 @@ python3 -B scripts/check_coverage_v2_types.py \
 
 完整示例见 [declarative_pipeline.py](../../examples/coverage/declarative_pipeline.py)。公开 API 在 [declarative 包](../../src/xreactor/declarative/__init__.py)，行为验证在 [test_declarative.py](../../tests/coverage/test_declarative.py)。
 
-## 本轮验证
+多周期 coverpoint、类型化引脚组、Sequence 完成时采样及动态 tag 事务关联见[协议绑定示例](coverage-v2-protocol.md)，可运行代码为 [declarative_protocol.py](../../examples/coverage/declarative_protocol.py)。它从实际稳定引脚和 Monitor 快照生成覆盖样本。
 
-2026-10-08，本机 Python 3.12.3、xcomm coverage ABI v3：
+## 初版验证
+
+初版提交 `93d3ba7`，2026-10-08，本机 Python 3.12.3、xcomm coverage ABI v3：
 
 - 完整 `tests` 目录 **922 passed**，包含 **37 个**新增声明层行为用例。
 - Pyright 1.1.414、Python 3.11 类型目标：公开 API 严格正例无错误，9 个标记负例全部拒绝。
@@ -123,6 +125,18 @@ python3 -B scripts/check_coverage_v2_types.py \
 - 实验 wheel 包含新模块与 `py.typed`，从独立解包目录运行导入和严格类型检查均成功。实验包使用显式版本 `0.1.0.dev0`，未发布或安装到全局环境。
 
 审核产物在 `/tmp/xreactor-coverage-v2-ob2uhbua/artifacts/`，按 manual、python、native 分目录保存。原仓库基线记录的 236 个文件指纹保持不变。
+
+## 本次协议示例验证
+
+2026-10-08，在同一 Python/ABI 环境中补上协议绑定实例：
+
+- 完整 `tests` 目录 **944 passed**，本次新增 **22 个**协议与采样契约行为用例。
+- 两份公开 API 严格类型正例通过，12 个标记负例全部拒绝。
+- memory/Python、xcomm/Python、xcomm/native 三条路径的请求周期覆盖、Sequence 完成采样和事务覆盖统计一致；同时核对窗口超时、错误数据、丢响应、tag 复用和资源清理。
+- 采样契约纳入 Sequence/Within 程序形状及窗口参数，不同窗口的报告拒绝合并。
+- 重新构建 wheel；独立解包后的 native 协议示例和两份严格类型正例通过。
+
+本次产物位于 `/tmp/xreactor-coverage-v2-ob2uhbua/artifacts/protocol-{memory,python,native,window2}/`。完整测试记录为 `/tmp/xreactor-coverage-v2-ob2uhbua/protocol-full-tests.txt`。
 
 ## 当前边界
 

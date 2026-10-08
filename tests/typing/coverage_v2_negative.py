@@ -1,6 +1,7 @@
 """Each EXPECT_ERROR line must be rejected; do not execute this file."""
 from xreactor.declarative import Bin, BinRule, CoverPoint
 from coverage_v2_positive import Coverage, Sample, StatePoint, TakenPoint, coverage, fields
+from coverage_v2_protocol_positive import requests, transactions
 
 coverage.sample({"state": 1, "taken": True})  # EXPECT_ERROR
 coverage.sample(Sample("busy", True))  # EXPECT_ERROR
@@ -14,3 +15,7 @@ StatePoint(source=boolean_field)  # EXPECT_ERROR
 
 class InvalidPoint(CoverPoint[int]):
     wrong: BinRule[int] = Bin.values("busy")  # EXPECT_ERROR
+
+transactions.sample(Sample(1, True))  # EXPECT_ERROR
+transactions.sample(None)  # EXPECT_ERROR
+requests.ready.count(StatePoint.busy)  # EXPECT_ERROR

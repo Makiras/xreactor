@@ -9,12 +9,45 @@ from typing import Generic, Literal, Self, TypeVar
 
 from ..coverage import CoverGroup as CoreCoverGroup, IllegalPolicy
 from ..signals import signal_width
+from ..triggers import CompiledTrigger, PythonPredicateTrigger, PhaseTrigger
 from ._compiler import CompiledGroup, compile_group, _json
 from ._declarations import (
     DefinitionError, SampleTypeError, SignalBindingBase, SignalBinding, normalize, scalar_type,
 )
 
 S = TypeVar("S")
+
+
+def _sampling_shape(trigger, abort, fields, explicit_contract, overlap, max_active):
+    """Keep serializable temporal meaning in the contract, outside native IDs."""
+    from .._coverage_runtime import _shape
+    phase = trigger if isinstance(trigger, PhaseTrigger) else getattr(trigger, "sample", None)
+    mode = getattr(trigger, "mode", None)
+    result = {"kind": type(trigger).__name__, "phase": None if phase is None else type(phase).__name__,
+              "mode": getattr(mode, "value", None), "overlap": overlap, "max_active": max_active or 1}
+    if isinstance(trigger, CompiledTrigger):
+        try:
+            result["program"] = _shape(trigger.program)
+        except ValueError as error:
+            if not explicit_contract:
+                raise DefinitionError("E_CONTRACT", trigger.name, "opaque pattern requires an explicit observer contract") from error
+            result["program"] = {"opaque": True, "name": trigger.name}
+    elif isinstance(trigger, PythonPredicateTrigger):
+        if not explicit_contract:
+            raise DefinitionError("E_CONTRACT", trigger.name, "Python predicate requires an explicit observer contract")
+        result["program"] = {"opaque": True, "name": trigger.name}
+    if abort is not None:
+        abort_field = next((name for name, signal in fields.items() if signal is abort), None)
+        if abort_field is not None:
+            result["abort"] = {"field": abort_field}
+        else:
+            try:
+                result["abort"] = _shape(abort)
+            except ValueError as error:
+                if not explicit_contract:
+                    raise DefinitionError("E_CONTRACT", "abort", "opaque abort source requires an explicit observer contract") from error
+                result["abort"] = {"opaque": True}
+    return result
 
 
 def _validated_snapshot(value, plan, path):
@@ -141,16 +174,20 @@ class CoverGroup(Generic[S]):
         missing = {".".join(path) for path in expected} - configured.keys()
         if missing:
             raise DefinitionError("E_MISSING_BINDING", type(self).__name__, f"unbound fields: {sorted(missing)}")
-        if any(item["source_id"] is None for item in bindings) and not json.loads(self._compiled._input_json)["observer_contract_explicit"]:
+        explicit_contract = json.loads(self._compiled._input_json)["observer_contract_explicit"]
+        if any(item["source_id"] is None for item in bindings) and not explicit_contract:
             raise DefinitionError("E_CONTRACT", type(self).__name__,
                                   "opaque signal identities require an explicit versioned observer contract")
-        # Stable field and source identities form the contract; backend choice does not.
-        binding_digest = sha256(_json(sorted(bindings, key=lambda item: item["field"])).encode()).hexdigest()
+        sampling = _sampling_shape(trigger, abort, configured, explicit_contract, overlap, max_active)
+        # Include the temporal program; two Within windows are different observations.
+        binding_digest = sha256(_json({"bindings": sorted(bindings, key=lambda item: item["field"]),
+                                      "sampling": sampling}).encode()).hexdigest()
         contract = f"{self._compiled.sampling_contract}|binding={binding_digest}"
         self._engine.bind(trigger=trigger, fields=configured, strategy=strategy, abort=abort,
                           accumulate=accumulate, contract=contract, overlap=overlap, max_active=max_active)
         self._binding_json = json.dumps({"binding_digest": binding_digest,
                                         "observer_contract": self._compiled.contract,
+                                        "sampling": sampling,
                                         "bindings": sorted(bindings, key=lambda item: item["field"]),
                                         "opaque_sources": sorted(item["field"] for item in bindings if item["source_id"] is None)},
                                        ensure_ascii=False, indent=2, sort_keys=True)
