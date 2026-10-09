@@ -1,6 +1,6 @@
 # Coverage v2 多周期与协议绑定示例
 
-状态：实验分支示例。实现仍在 `/tmp/xreactor-coverage-v2-ob2uhbua/xreactor` 的 `coverage-v2` 分支，原仓库不变。[完整可运行代码](../../examples/coverage/declarative_protocol.py)从同一个 ready/valid 请求响应接口展示三种覆盖：相邻时序 bin、多周期完成时采样，以及按事务 ID 关联后的延迟与乱序覆盖。
+状态：实验分支示例。[完整可运行代码](https://github.com/Makiras/xreactor/blob/draft/coverage-v2/examples/coverage/declarative_protocol.py)从同一个 ready/valid 请求响应接口展示三种覆盖：相邻时序 bin、多周期完成时采样，以及按事务 ID 关联后的延迟与乱序覆盖。当前配套引擎版本见 [picker/xcomm 适配](coverage-v2-trigger-bins.md#pickerxcomm-分支适配)。
 
 ## 多周期 coverpoint
 
@@ -82,7 +82,7 @@ completed.bind(
 
 Sequence 是这个 group 的采样条件。相邻 transition 是 bin 的 matcher。两者的职责明确区分；当前 API 尚未提供每个 bin 独立声明任意 Sequence/FSM 的能力。这个固定 tag 的 Sequence 也不承担任意动态 tag 的事务关联。
 
-后续[共享时序程序设计](../../design/drafts/coverage-v2-patterns.md)将每个 bin 复用 xtrigger 模式、原生捕获及动态 key 关联列为 C++ 扩展需求。目标接口按覆盖语义设计；本例展示的 ABI v3 能力是实现起点。
+后续[共享时序程序设计](https://github.com/Makiras/xreactor/blob/draft/coverage-v2/design/drafts/coverage-v2-patterns.md)将每个 bin 复用 xtrigger 模式、原生捕获及动态 key 关联列为 C++ 扩展需求。目标接口按覆盖语义设计；本例最初展示的 coverage 描述协议 3 能力是实现起点。
 
 绑定导出包含时序程序、采样阶段和窗口参数。改变 Within 的 maximum 会改变采样契约，旧报告与新窗口的报告不能合并；仅改变 Python/native 执行策略不会改变同一采样契约。无法序列化的 Python predicate 等来源要求显式的项目观察契约。
 
@@ -142,4 +142,4 @@ python3 -B examples/coverage/declarative_protocol.py --engine xcomm --strategy n
 python3 -B -m pytest tests/coverage/test_declarative_protocol.py -q -p no:cacheprovider
 ```
 
-生成产物包含逐周期快照、请求接受周期、关联完成事务、三类覆盖报告和实际引脚/时序绑定契约。[行为测试](../../tests/coverage/test_declarative_protocol.py)比较 memory/Python、xcomm/Python、xcomm/native 三条路径，包含窗口超时、错误响应、丢响应、tag 同拍复用及清理。[类型正例](../../tests/typing/coverage_v2_protocol_positive.py)验证嵌套字段、引脚引用和 Monitor → collector → transaction coverage 的类型链路。
+生成产物包含逐周期快照、请求接受周期、关联完成事务、三类覆盖报告和实际引脚/时序绑定契约。[行为测试](https://github.com/Makiras/xreactor/blob/draft/coverage-v2/tests/coverage/test_declarative_protocol.py)比较 memory/Python、xcomm/Python、xcomm/native 三条路径，包含窗口超时、错误响应、丢响应、tag 同拍复用及清理。[类型正例](https://github.com/Makiras/xreactor/blob/draft/coverage-v2/tests/typing/coverage_v2_protocol_positive.py)验证嵌套字段、引脚引用和 Monitor → collector → transaction coverage 的类型链路。

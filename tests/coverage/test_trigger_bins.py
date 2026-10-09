@@ -245,13 +245,13 @@ def test_old_native_abi_fallback_is_explicit(monkeypatch, strategy):
             async with Execution(toy.backend, coverage=[group.runtime]):
                 await ClockCycles(toy.clock, 1)
         if strategy == "native":
-            with pytest.raises(NotImplementedError, match="version 4"):
+            with pytest.raises(NotImplementedError, match="descriptor protocol version 4"):
                 asyncio.run(execute())
         else:
             asyncio.run(execute())
             report = group.report()
             assert report["sampling_backend"] == "python"
-            assert "version 4" in report["sampling_fallback"]
+            assert "descriptor protocol version 4" in report["sampling_fallback"]
         assert toy.backend.watcher_count == 0
     finally:
         toy.close()

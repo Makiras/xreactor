@@ -201,12 +201,12 @@ class _Collector:
     def _start_native(self):
         b = self.backend
         if not isinstance(b, XCommClockBackend) or not hasattr(b._engine, "CoverageVersion"):
-            raise NotImplementedError("backend does not provide native coverage ABI")
-        version = b._engine.CoverageVersion()
-        if version not in (3, 4):
-            raise NotImplementedError("native coverage requires ABI version 3 or 4; rebuild xcomm")
-        if self.bin_patterns and version != 4:
-            raise NotImplementedError("native trigger bins require ABI version 4; rebuild xcomm")
+            raise NotImplementedError("backend does not provide native coverage descriptor protocol")
+        protocol = b._engine.CoverageVersion()
+        if protocol not in (3, 4):
+            raise NotImplementedError("native coverage requires descriptor protocol version 3 or 4; rebuild xcomm")
+        if self.bin_patterns and protocol != 4:
+            raise NotImplementedError("native trigger bins require descriptor protocol version 4; rebuild xcomm")
         if isinstance(self.trigger, PythonPredicateTrigger):
             raise NotImplementedError("Python predicates require Python sampling")
         x, engine = b._xspcomm, b._engine

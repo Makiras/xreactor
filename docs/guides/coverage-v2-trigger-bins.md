@@ -1,12 +1,12 @@
 # Coverage v2：每个 bin 直接使用 xtrigger
 
-2026-10-09，`/tmp/xreactor-coverage-v2-ob2uhbua` 中的实验实现。xreactor 和 xcomm 都在独立的 `coverage-v2` 分支，原仓库不参与修改。
+这是 coverage v2 草稿。当前适配 picker/xcomm 的 `xreactor-coverage-v2` 分支；原生 ABI 为 3，coverage 描述协议为 4。精确提交与本地构建方式见下文。
 
 这轮接通了完整执行路径：**一个 bin 引用一个现有 xtrigger 定义，C++ 持续推进并计数**。现有 Bundle、表达式 IR、Sequence/FSM 推进函数、coverage 计数存储、快照和报告继续复用。
 
 ## 定义与使用
 
-可运行的完整示例见 [trigger_bins.py](../../examples/coverage/trigger_bins.py)，引脚组和 DUT 替身直接复用 [declarative_protocol.py](../../examples/coverage/declarative_protocol.py)。
+可运行的完整示例见 [trigger_bins.py](https://github.com/Makiras/xreactor/blob/draft/coverage-v2/examples/coverage/trigger_bins.py)，引脚组和 DUT 替身直接复用 [declarative_protocol.py](https://github.com/Makiras/xreactor/blob/draft/coverage-v2/examples/coverage/declarative_protocol.py)。
 
 ```python
 @xtrigger(sample=RisingEdge("clock"))
@@ -73,11 +73,11 @@ class Completions(TemporalCoverPoint[ProtocolBundle]):
 
 重叠请求仍各自有匹配状态。一拍内可以有 FAST 一次、SLOW 两次；引擎保留各终态的完成数量，分别分发给选择对应结果的 bins。Expr 和 Sequence 也可以共享同一观察结果，保留原事件模式和步骤语义。
 
-声明写法沿用现有 Bin.pattern，不增加用户必须定义的中间层级。CompiledGroup.explain() 会显示例如 `execution 0 (checked_tag_one): bad_data, correct_data` 的关系。引擎复用现有 CoverageState、MatchState、AdvanceFsm/AdvanceSequence；原生 group 仍只占一份采样注册。
+声明写法沿用现有 Bin.pattern，不增加用户必须定义的中间层级。CompiledGroup.explain() 会显示例如 `execution 0 (checked_tag_one): bad_data, correct_data` 的关系。目标引擎的 CoverageState 使用 trigger 模块的 PatternMatcher，底层继续复用 AdvanceFsm/AdvanceSequence；原生 group 仍只占一份采样注册。
 
 `CoverageExecutionCount(handle)` 是检查独立 pattern 执行数量的原生查询，排除 group 采样源和值 bins。协议示例的六个 bins 对应五份执行；两个终态 bins 共享一个 FSM。每个 bin 的诊断和 progress 继续显示该 bin 消费的观察过程，不能把这些视图相加当成实际资源数量。
 
-该优化保持 coverage 描述符 ABI 4、schema version 3 和报告契约不变。需要使用本实验配套 xcomm 实现才能得到共享执行优化。长 Execution 内节点回收、沿途 emit 事件及动态关联仍未实现。
+该优化使用 coverage 描述协议 4，保持 schema version 3 和报告契约不变。配套原生库使用 ABI 3；两个版本号分别描述参数协议和 C++ 二进制兼容性。长 Execution 内节点回收、沿途 emit 事件及动态关联仍未实现。
 
 ## 编译与计数
 
@@ -85,13 +85,13 @@ class Completions(TemporalCoverPoint[ProtocolBundle]):
 类声明与继承
   -> 现有 CompiledGroup：冻结参数、IR 序列化、schema、explain/diff
   -> 现有 backend lowering：绑定真实信号、编译表达式和步骤
-  -> xcomm coverage ABI 4：共享的过程执行与各 bin 的结果选择
-  -> 现有 AdvanceSequence / AdvanceFsm / 表达式求值
+  -> xcomm coverage 描述协议 4：共享的过程执行与各 bin 的结果选择
+  -> trigger PatternMatcher / AdvanceSequence / AdvanceFsm / 表达式求值
   -> 原生累计计数与 CoverageSnapshot
   -> 同一个 CoreCoverGroup 的报告与 CoverageDatabase
 ```
 
-pattern point 不需要虚构一个数值信号。每个 bin 的 matcher 保留完整程序，schema version 3 包含程序、参数、mode、终态和容量；更改窗口会改变 schema digest，报告不会误合并。普通值覆盖仍接受 ABI 3/4，trigger bins 的严格 native 路径要求 ABI 4；auto 路径遇到旧 ABI 明示回退原因。
+pattern point 不需要虚构一个数值信号。每个 bin 的 matcher 保留完整程序，schema version 3 包含程序、参数、mode、终态和容量；更改窗口会改变 schema digest，报告不会误合并。普通值覆盖仍接受描述协议 3/4，trigger bins 的严格 native 路径要求协议 4；auto 路径遇到旧协议明示回退原因。
 
 默认不重叠，`max_active=1`。重叠模式必须显式提供容量，例如 `Bin.pattern(roundtrip, overlap=True, max_active=8)`。同拍三次完成按三次计数。容量不足标记采集不完整并报错。reset、clear_history、abort 沿用现有执行生命周期；普通等待的取消不会清空 coverage 的历史。
 
@@ -104,8 +104,8 @@ ignore/illegal 在 pattern point 中修饰各自的过程事件，不取消同 p
 在实验根目录运行：
 
 ```bash
-/tmp/xreactor-coverage-v2-ob2uhbua/run-trigger-bins.sh --engine xcomm --strategy native
-/tmp/xreactor-coverage-v2-ob2uhbua/run-trigger-bins.sh --engine memory --strategy python
+python -m examples.coverage.trigger_bins --engine xcomm --strategy native
+python -m examples.coverage.trigger_bins --engine memory --strategy python
 ```
 
 示例发送 tag 1、2、3，响应顺序是 2、1、3。预期计数：
@@ -120,6 +120,42 @@ ignore/illegal 在 pattern point 中修饰各自的过程事件，不取消同 p
 | completions.bad_data | 0 | 没有错误数据 |
 
 Python memory、xcomm Python 和 xcomm native 使用同一输入，对比计数。测试还覆盖同拍多个完成、FSM 未选终态、gate/abort/reset、普通 waiter 取消、容量失败、报告序列化，以及 native 不调用 Python sample、不因每次命中唤醒 Python。类型测试直接导入真实实现，检查参数名/类型、输入根类型和 bin 引用。
+
+## picker/xcomm 分支适配
+
+适配基线为 xreactor `11f7e89`，配套 picker `60ca8e8`、xcomm `83ab5b2c466ad5ebfb0275b84830a41f9c06bb5e`。picker 和 xcomm 均来自 `xreactor-coverage-v2` 分支；picker 的 `.build-config.yml` 固定了同一份 xcomm。
+
+| 版本 | 值 | 检查方式 |
+| --- | --- | --- |
+| xspcomm 包版本 | `0.3.0.dev0` | `importlib.metadata.version("xspcomm")`、`xspcomm.version()` |
+| 原生 C++ ABI | `3` | `xspcomm.abi_version()`，对应 `libxspcomm.so.3` |
+| coverage 描述协议 | `4` | `XTriggerEngine.CoverageVersion()` |
+| pattern schema | `3` | 报告中的 schema version |
+
+CI 从 `.github/native-dependencies.json` 获取精确提交与这三个原生依赖版本，构建明确标识为 `0.3.0.dev0` 的预览包并分别校验。现有 Python lowering 使用的 ArmSample、AttachCoverage、CoverageSnapshot、CoverageExecutionCount 接口保持一致，类声明和 schema 不需要改变。
+
+在独立工作目录中取得上述 xcomm 提交后，使用独立 Python 环境构建：
+
+```bash
+SETUPTOOLS_SCM_PRETEND_VERSION_FOR_XSPCOMM=0.3.0.dev0 \
+BUILD_XSPCOMM_SWIG=python XSPCOMM_BUILD_WHEEL=1 \
+python -m pip install /path/to/xcomm
+python -m pip install -e '.[native,test]'
+python -m pytest -q --require-xspcomm
+python -m examples.coverage.trigger_bins --engine xcomm --strategy native
+```
+
+原生 ABI 变化后，picker 和生成的 DUT 扩展必须使用匹配的头文件与运行库重新构建。纯 Python MemoryBackend 仍不需要安装 xspcomm。真实 Adder DUT 的覆盖率示例见 `examples/coverage/picker_adder.py`：使用普通 Bundle 绑定生成的 XData，覆盖 128 位信号、跨采样 Sequence 和共享多终态 FSM。
+
+取得使用配套 picker 重新生成的 Adder 包后，运行：
+
+```bash
+python -m examples.coverage.picker_adder \
+  --dut-path /path/to/generated \
+  --report /tmp/picker-adder-coverage.json
+```
+
+`--dut-path` 指向包含 Adder 包的目录。若构建时使用 `VERBOSE=ON` 保留了中间目录，再加 `--dut-module Adder.UT_Adder`。示例将每组输入保持两个采样，然后插入一个空闲采样；Adder RTL 本身是组合逻辑，Sequence/FSM 描述这里的观察窗口。7 个 bins 共用 3 份原生过程执行和一个采样注册，预期 carry 2 次、no_carry 2 次、完整溢出 Sequence 1 次、高半区结果 2 次。`repeated` bins 保留独立阈值，完整溢出的阈值 2 此时尚未达到。
 
 ## 尚未完成
 

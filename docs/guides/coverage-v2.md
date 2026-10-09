@@ -95,7 +95,7 @@ clock-bound 输入目前限定 int/bool，bool 要求一个物理 bit。已有 a
 
 ## 本机运行
 
-在实验仓库根目录执行，使用本机已有的 xcomm ABI v3 构建：
+在实验仓库根目录执行，最初使用本机已有的 xcomm coverage 描述协议 3 构建：
 
 ```bash
 export PYTHONDONTWRITEBYTECODE=1
@@ -110,13 +110,13 @@ python3 -B scripts/check_coverage_v2_types.py \
   --pyright node /tmp/xreactor-class-coverage-tools/node_modules/pyright/index.js
 ```
 
-完整示例见 [declarative_pipeline.py](../../examples/coverage/declarative_pipeline.py)。公开 API 在 [declarative 包](../../src/xreactor/declarative/__init__.py)，行为验证在 [test_declarative.py](../../tests/coverage/test_declarative.py)。
+完整示例见 [declarative_pipeline.py](https://github.com/Makiras/xreactor/blob/draft/coverage-v2/examples/coverage/declarative_pipeline.py)。公开 API 在 [declarative 包](https://github.com/Makiras/xreactor/blob/draft/coverage-v2/src/xreactor/declarative/__init__.py)，行为验证在 [test_declarative.py](https://github.com/Makiras/xreactor/blob/draft/coverage-v2/tests/coverage/test_declarative.py)。
 
-多周期 coverpoint、类型化引脚组、Sequence 完成时采样及动态 tag 事务关联见[协议绑定示例](coverage-v2-protocol.md)，可运行代码为 [declarative_protocol.py](../../examples/coverage/declarative_protocol.py)。它从实际稳定引脚和 Monitor 快照生成覆盖样本。
+多周期 coverpoint、类型化引脚组、Sequence 完成时采样及动态 tag 事务关联见[协议绑定示例](coverage-v2-protocol.md)，可运行代码为 [declarative_protocol.py](https://github.com/Makiras/xreactor/blob/draft/coverage-v2/examples/coverage/declarative_protocol.py)。它从实际稳定引脚和 Monitor 快照生成覆盖样本。
 
 ## 初版验证
 
-初版提交 `93d3ba7`，2026-10-08，本机 Python 3.12.3、xcomm coverage ABI v3：
+初版提交 `93d3ba7`，2026-10-08，本机 Python 3.12.3、xcomm coverage 描述协议 3：
 
 - 完整 `tests` 目录 **922 passed**，包含 **37 个**新增声明层行为用例。
 - Pyright 1.1.414、Python 3.11 类型目标：公开 API 严格正例无错误，9 个标记负例全部拒绝。
@@ -142,15 +142,15 @@ python3 -B scripts/check_coverage_v2_types.py \
 
 ## 共享时序程序的设计方向
 
-后续设计更新见[共享时序程序与 C++ 执行草稿](../../design/drafts/coverage-v2-patterns.md)。目标是复用 xtrigger 的 Expr/Sequence/FSM 定义，让 trigger 通知、coverage 持续计数和观测记录各自保存运行状态；每个 bin 的完整模式、字段捕获、按 key 关联和完成上下文都可以向 C++ 引擎提出能力需求。
+后续设计更新见[共享时序程序与 C++ 执行草稿](https://github.com/Makiras/xreactor/blob/draft/coverage-v2/design/drafts/coverage-v2-patterns.md)。目标是复用 xtrigger 的 Expr/Sequence/FSM 定义，让 trigger 通知、coverage 持续计数和观测记录各自保存运行状态；每个 bin 的完整模式、字段捕获、按 key 关联和完成上下文都可以向 C++ 引擎提出能力需求。
 
 当前优先范围是长 Execution 内的程序回收、每个 bin 的完整时序程序，以及表达式类型语义。程序与观察实例的拆分程度由实现需要决定；统一诊断和规模优化后排，字段捕获与动态 key 关联继续讨论。
 
-下一步分支修改见[具体接口与分批实施方案](../../design/drafts/trigger-bins/README.md)，附有可严格类型检查的接口草稿。普通 bin 直接引用 xtrigger 定义，需要阈值等配置时才使用 Bin.pattern；参数绑定、重复引用、继承、采样和终态选择都有明确规则。
+下一步分支修改见[具体接口与分批实施方案](https://github.com/Makiras/xreactor/blob/draft/coverage-v2/design/drafts/trigger-bins/README.md)，附有可严格类型检查的接口草稿。普通 bin 直接引用 xtrigger 定义，需要阈值等配置时才使用 Bin.pattern；参数绑定、重复引用、继承、采样和终态选择都有明确规则。
 
 复用修订明确使用现有 Bundle/ReadyValid、signal_expr、Expr/Sequence/FSM、CompiledGroup 和现有 coverage runtime；协议运行示例也直接使用 Bundle 子类。新增能力只补已有组件的缺口，不建立另一套信号容器、时序 IR 或计数报告系统。
 
-草稿中的 `Bin.pattern`、`TemporalCoverPoint`、`SignalCoverGroup` 和新 C++ 接口尚未实现。本文已验证的类声明接口和协议示例仍使用当前 ABI v3；已有验证结果不包含这些新增能力。
+初版验证时 `Bin.pattern`、`TemporalCoverPoint`、`SignalCoverGroup` 尚未实现。当前分支已经接通这些能力，支持每个 bin 的完整程序及同 point 下共享执行；最新接口与配套引擎要求见 [trigger bins 指南](coverage-v2-trigger-bins.md)。
 
 ## 当前边界
 
@@ -161,4 +161,4 @@ Python 的 bool 是 int 的子类型，静态工具在某些 lambda 上下文中
 测试和本机 ABI 验证可以支持这条实现路线，不能作为完整候选 API、所有编辑器体验或真实 DUT 性能的验收结论。
 
 
-2026-10-09 已接入独立 xcomm ABI 4 的每 bin 完整程序实验。直接使用 @xtrigger 定义 bins、Sequence/FSM 独立推进、原生持续计数的用法见 [trigger bins 指南](coverage-v2-trigger-bins.md)。长 Execution 程序回收和完整表达式类型仍未完成。
+2026-10-09 已接入 coverage 描述协议 4 的每 bin 完整程序实验，并适配原生 ABI 3 的 picker/xcomm `xreactor-coverage-v2` 分支。直接使用 @xtrigger 定义 bins、共享 Sequence/FSM 推进、原生持续计数的用法见 [trigger bins 指南](coverage-v2-trigger-bins.md)。长 Execution 程序回收和完整表达式类型仍未完成。
