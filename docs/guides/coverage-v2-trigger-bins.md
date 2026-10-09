@@ -159,6 +159,6 @@ python -m examples.coverage.picker_adder \
 
 ## 尚未完成
 
-长 Execution 内程序节点和缓存的细粒度回收仍待做；当前继续使用 Execution 结束时的既有清理路径。完整的 Bool/Bits、signed、宽运算、cast 和未知位类型规则也未实现。本轮复用现有表达式能力，不承诺新的表达式语义或完整 UCIS 兼容。
+长 Execution 内程序节点和缓存的细粒度回收仍待做；当前继续使用 Execution 结束时的既有清理路径。完整的 Bool/Bits、signed、宽运算、cast 类型规则也未实现。资源增长实测与后续实现契约见[程序回收与表达式审查](coverage-v2-engine-audit.md)，X/Z 处理暂缓。本轮复用现有表达式能力，不承诺新的表达式语义或完整 UCIS 兼容。
 
 动态 tag 捕获/关联、完成上下文及 temporal Cross 保留为后续讨论。当前示例按固定 tag 编译匹配；现有 Python TransactionCollector 仍处理动态事务关联。没有新增信号容器、事务引擎、时序 VM 或报告系统。

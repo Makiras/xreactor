@@ -1,6 +1,6 @@
 # Coverage v2 多周期与协议绑定示例
 
-状态：实验分支示例。[完整可运行代码](https://github.com/Makiras/xreactor/blob/draft/coverage-v2/examples/coverage/declarative_protocol.py)从同一个 ready/valid 请求响应接口展示三种覆盖：相邻时序 bin、多周期完成时采样，以及按事务 ID 关联后的延迟与乱序覆盖。当前配套引擎版本见 [picker/xcomm 适配](coverage-v2-trigger-bins.md#pickerxcomm-分支适配)。
+状态：实验分支示例。[完整可运行代码](https://github.com/Makiras/xreactor/blob/draft/coverage-v2/examples/coverage/declarative_protocol.py)从同一个 ready/valid 请求响应接口展示三种覆盖：相邻时序 bin、多周期完成时采样，以及按事务 ID 关联后的延迟与乱序覆盖。当前配套引擎版本见 [picker/xcomm 适配](coverage-v2-trigger-bins.md#pickerxcomm)。
 
 ## 多周期 coverpoint
 
