@@ -4,9 +4,11 @@ from __future__ import annotations
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, is_dataclass
 from enum import Enum
-from typing import Generic, Self, TypeVar, get_type_hints, overload
+from typing import Generic, Self, TypeVar, get_type_hints, overload, TypeAlias
 
-from ..coverage import Bin as CoreBin, BinSpec, OverlapPolicy
+from ..coverage import Bin as CoreBin, BinSpec, BinKind, PatternMatcher, OverlapPolicy
+from ..decorators import TriggerDefinition
+from ..ir import FsmSpec
 
 T = TypeVar("T")
 S = TypeVar("S")
@@ -41,13 +43,39 @@ def normalize(value: object) -> object:
 class BinRule(Generic[T]):
     spec: BinSpec
     value_type: type[T]
+    _pattern: TriggerDefinition[T, ...] | None = None
 
     @property
     def at_least(self) -> int:
         return self.spec.at_least
 
 
+PatternBin: TypeAlias = TriggerDefinition[T, ...] | BinRule[T]
+
+
 class Bin:
+    @staticmethod
+    def pattern(pattern: TriggerDefinition[T, ...], *, at_least: int = 1,
+                kind: BinKind = BinKind.NORMAL, terminals: tuple[str, ...] | None = None,
+                all_terminals: bool = False, overlap: bool = False,
+                max_active: int | None = None) -> BinRule[T]:
+        if not isinstance(pattern, TriggerDefinition) or not isinstance(pattern.input_type, type):
+            raise DefinitionError("E_PATTERN", "Bin.pattern", "use an annotated @xtrigger definition")
+        if overlap and max_active is None:
+            raise DefinitionError("E_CAPACITY", "Bin.pattern", "overlap requires explicit max_active")
+        if terminals is not None and (not terminals or all_terminals):
+            raise DefinitionError("E_TERMINAL", "Bin.pattern", "select nonempty terminals or all_terminals")
+        program = pattern.program
+        if isinstance(program, FsmSpec):
+            names = {t.terminal for _, st in program.states for t in st.transitions if t.terminal is not None}
+            if terminals is None and not all_terminals and len(names) != 1:
+                raise DefinitionError("E_TERMINAL", "Bin.pattern", "multi-terminal FSM requires explicit selection")
+        elif terminals is not None or all_terminals:
+            raise DefinitionError("E_TERMINAL", "Bin.pattern", "terminal selection requires FSM")
+        matcher = PatternMatcher(program, pattern.mode.value, overlap, max_active if max_active is not None else 1,
+                                 () if terminals is None else tuple(terminals))
+        return BinRule(BinSpec(matcher, kind, at_least), pattern.input_type, pattern)
+
     @staticmethod
     def values(*values: T, at_least: int = 1) -> BinRule[T]:
         return Bin._values(values, False, True, at_least)
@@ -91,11 +119,11 @@ class Bin:
 
     @staticmethod
     def ignore(rule: BinRule[T]) -> BinRule[T]:
-        return BinRule(CoreBin.ignore(rule.spec), rule.value_type)
+        return BinRule(CoreBin.ignore(rule.spec), rule.value_type, rule._pattern)
 
     @staticmethod
     def illegal(rule: BinRule[T]) -> BinRule[T]:
-        return BinRule(CoreBin.illegal(rule.spec), rule.value_type)
+        return BinRule(CoreBin.illegal(rule.spec), rule.value_type, rule._pattern)
 
     @staticmethod
     def default(value_type: type[T]) -> BinRule[T]:
@@ -190,7 +218,7 @@ class BoundPoint(Generic[T]):
     def __init__(self, group, name):
         self._group, self._name = group, name
 
-    def count(self, bin: BinRule[T]) -> int:
+    def count(self, bin: PatternBin[T]) -> int:
         name = self._group._compiled.resolve_bin(self._name, bin)
         self._group.sync()
         with self._group.runtime._lock:
@@ -240,6 +268,10 @@ class CoverPoint(PointDeclaration, Generic[T]):
 
     def bin(self, bin: BinRule[T]) -> BinSelection:
         return BinSelection(self, bin)
+
+
+class TemporalCoverPoint(CoverPoint[T]):
+    """Declaration marker; matching/counting use the existing coverage runtime."""
 
 
 class BoundCross:

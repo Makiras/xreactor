@@ -5,7 +5,8 @@ from xreactor.ir import SequenceSpec, XExpr, signal_expr
 from xreactor.triggers import CompiledTrigger
 from examples.coverage.declarative_protocol import Pin, ProtocolBundle
 
-from api import Bin, xtrigger
+from xreactor import xtrigger
+from xreactor.declarative import Bin
 from example import ProtocolCoverage, roundtrip
 
 

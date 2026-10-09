@@ -358,3 +358,54 @@ def FSM(*, start: str, states: dict[str, State]) -> FsmSpec:
         start=start,
         states=tuple((name, state.freeze()) for name, state in states.items()),
     )
+
+
+# One portable representation of the existing IR, shared by schemas/contracts.
+def program_to_dict(value):
+    from dataclasses import fields, is_dataclass
+    if isinstance(value, BoundSignalExpr):
+        raise ValueError("portable patterns require symbolic signal paths")
+    if is_dataclass(value) and type(value) in _PROGRAM_NODES.values():
+        return {"type": type(value).__name__, **{f.name: program_to_dict(getattr(value, f.name)) for f in fields(value)}}
+    if isinstance(value, tuple):
+        return [program_to_dict(item) for item in value]
+    if type(value) in (int, bool, str, type(None)):
+        return value
+    raise TypeError(f"unsupported portable IR value: {type(value).__name__}")
+
+
+def program_from_dict(value):
+    if isinstance(value, list):
+        return tuple(program_from_dict(item) for item in value)
+    if isinstance(value, dict):
+        kind = value.get("type")
+        if kind not in _PROGRAM_NODES:
+            raise ValueError(f"unknown IR node {kind!r}")
+        return _PROGRAM_NODES[kind](**{k: program_from_dict(v) for k, v in value.items() if k != "type"})
+    if type(value) not in (int, bool, str, type(None)):
+        raise TypeError("invalid portable IR value")
+    return value
+
+
+def program_signal_paths(program):
+    from dataclasses import fields, is_dataclass
+    paths = set()
+    def walk(value):
+        if isinstance(value, SignalExpr):
+            paths.add(value.path)
+        elif isinstance(value, BoundSignalExpr):
+            raise ValueError("coverage declarations require symbolic paths")
+        elif is_dataclass(value):
+            for f in fields(value):
+                walk(getattr(value, f.name))
+        elif isinstance(value, tuple):
+            for item in value:
+                walk(item)
+    walk(program)
+    return tuple(sorted(paths))
+
+
+_PROGRAM_NODES = {cls.__name__: cls for cls in (
+    ConstantExpr, SignalExpr, UnaryExpr, BinaryExpr, WaitStep, NextStep,
+    WithinStep, HoldStep, SequenceSpec, FsmTransitionSpec, FsmStateSpec, FsmSpec,
+)}

@@ -1,8 +1,8 @@
 # 临时 coverage-v2 分支的下一步
 
-状态：接口与实施草稿，2026-10-08。只修改 `/tmp/xreactor-coverage-v2-ob2uhbua/xreactor`，运行示例仍见[已实现指南](../../../docs/guides/coverage-v2.md)。本文细化[共享时序设计](../coverage-v2-patterns.md)，不表示新引擎已经实现。
+状态：实验实现与后续设计，2026-10-09。`/tmp/xreactor-coverage-v2-ob2uhbua/xreactor` 和相邻 `xcomm` 都已接入每 bin 完整程序路径。运行方式、实际能力及限制见[trigger bins 实验指南](../../../docs/guides/coverage-v2-trigger-bins.md)。原仓库保持不动。
 
-**把 xtrigger 定义直接当成 bin 的匹配定义。Point 管 bins，Group 管 points；C++ 继续匹配和计数。** 下一轮用一个短协议示例贯穿接口、类型检查、原生编译和资源释放，先完成这条闭环。
+**把 xtrigger 定义直接当成 bin 的匹配定义。Point 管 bins，Group 管 points；C++ 继续匹配和计数。** 本轮已用短协议示例接通声明、类型检查、原生编译和计数；长 Execution 内的程序回收与完整表达式类型仍是后续工作。
 
 ## 先复用现有组件
 
@@ -21,13 +21,13 @@
 | 声明组织与审核 | declarative 的 PointDeclaration、MRO/冻结检查、CompiledGroup/explain/diff | 增加 pattern 类型分支与绑定检查，沿用同一编译产物和审查入口 |
 | 覆盖计数、报告与生命周期 | CoverGroupDef/CoreCoverGroup、_coverage_runtime、CoverageDatabase、Execution | 扩展现有 schema/adapter/native 描述符，继续使用唯一计数存储和报告 |
 
-TemporalCoverPoint、SignalCoverGroup 是候选声明入口，用来区分值分类与过程完成、快照输入与 live 输入；它们不建立另一套 runtime。TriggerDefinition/with_args 只补充现有 @xtrigger 的可读取元数据和参数冻结，内部仍保存原来的 Expr/Sequence/FSM。CompiledGroup 增加输入模式后继续复用，不能把现有 frozen sample 校验强套给 live Bundle。
+TemporalCoverPoint、SignalCoverGroup 是实验声明入口，用来区分值分类与过程完成、快照输入与 live 输入；它们不建立另一套 runtime。TriggerDefinition/with_args 只补充现有 @xtrigger 的可读取元数据和参数冻结，内部仍保存原来的 Expr/Sequence/FSM。CompiledGroup 增加输入模式后继续复用，不能把现有 frozen sample 校验强套给 live Bundle。
 
 ReadyValid.fire 当前使用 DriveStable(clock) 与 EACH_SAMPLE。本例按 RisingStable 观察 DUT 的请求和响应，不能为了复用名称偷偷换 phase；相同阶段的握手消费者应直接使用 fire。示例的 CycleSnapshot/CompletedTransaction 是观测与业务解码类型，复用 BundleValue/Transfer 后才生成；不是另一个 live 信号容器。动态 tag collector 仍是本例的业务参考模型，不新增通用事务引擎。
 
 ## 用户最终写什么
 
-[example.py](example.py) 是完整的候选接口例子，核心部分如下：
+[example.py](example.py) 使用真实实验接口，完整运行示例见 [trigger_bins.py](../../../examples/coverage/trigger_bins.py)。核心部分如下：
 
 ```python
 @xtrigger()
@@ -66,12 +66,12 @@ count = coverage.roundtrip.count(RoundTripPoint.within_four_cycles)
 | --- | --- |
 | `roundtrip` 是什么 | 不可变的 `TriggerDefinition[P, Args]`，保存声明函数、输入根类型、参数签名和显式策略；不 arm |
 | `roundtrip(pins, maximum=8)` | 返回已有语义的绑定 trigger；await 时才注册。静态返回类型是 CompiledTrigger，而非 SequenceSpec |
-| `roundtrip.with_args(maximum=8)` | 检查并冻结所有非引脚参数，返回尚未绑定引脚的 TriggerPattern[P]；不会创建运行状态 |
+| `roundtrip.with_args(maximum=8)` | 检查并冻结所有非引脚参数，返回尚未绑定引脚的 TriggerDefinition[P, ...]；不会创建运行状态 |
 | 直接引用带参数的定义 | 仅当所需参数都有默认值时合法；编译时冻结默认值。缺少必需参数就报错，要求先 with_args |
 | `Bin.pattern(...)` | 创建独立、不可变的覆盖配置，保留原 matcher；附加阈值、kind、终态选择和有界重叠配置 |
 | Python 类自动绑定函数 | TriggerDefinition 是可调用对象，不实现普通函数的 `__get__`；读 Point.read 不注入 self |
 | 引脚组采样 | 由 coverage.bind 的实际时钟/phase 指定。定义已指定 sample 时，解析后必须与其一致，否则绑定失败 |
-| 其他采样入口 | TriggerPattern.bind 可以显式指定 sample；普通 await 路径继续按现有规则使用 Execution 的默认 sample |
+| 其他采样入口 | TriggerDefinition.bind 可以显式指定 sample；普通 await 路径继续按现有规则使用 Execution 的默认 sample |
 | 表达式事件模式 | EACH_SAMPLE/ENTER/CHANGE 保留原定义；read_accepted 宜显式 EACH_SAMPLE，连续握手每拍都算一次 |
 | 时序观察模式 | 默认 non-overlap、max_active=1；overlap 要显式提供有界容量，沿用现有重新启动顺序 |
 | 计数单位 | 一个完成匹配加 1，同拍两个完成加 2；观察采样次数单列 observations |
@@ -191,23 +191,19 @@ Bundle 字段注解提供补全，既有 IR 扩展后负责表达式真实类型
 | 4. 每 bin 完整程序 | coverage schema、_coverage_runtime.py、声明 runtime；隔离 xcomm 的 coverage 描述符与计数路径 | 每个 bin 支持 Expr/完整 Sequence/FSM 终态，C++ 持续计数，无虚构 signal、无循环 await |
 | 5. 协议实例验收 | examples/coverage、tests/coverage、tests/typing 和打包检查 | 一个 group 同时展示逐拍握手 bin、Wait/Within/Hold bin、FSM 成功/超时 bins；计数、完成拍和生命周期可核对 |
 
-这是三项能力的施工顺序，批次不是互不相关的新框架。先让新声明可编译但不执行，随后通过资源、类型和完整 bin 执行闭环；不能把“能接受语法”称为时序覆盖完成。当前原仓库和 `/home/xyl/picker/dependence/xcomm` 都保持只读；C++ 开工前在 `/tmp` 建独立副本，构建也使用新目录，不能复用指向原源码的构建目录进行修改。
+2026-10-09 实际先完成批次 1、4 及批次 5 的计数/类型验收，以验证共享程序路径是否成立。批次 2、3 尚未实现，不能把原生运行闭环称为三项能力全部完成。两个源码仓库都在 `/tmp`，新构建目录为 `/tmp/xreactor-coverage-v2-ob2uhbua/xcomm-build`；旧构建和原仓库保持只读。
 
 验收重点：窗口两端、Hold 连续性、FSM 未选终态、重复完成、ENTER 与 EACH_SAMPLE 的区别、同拍多个完成、non-overlap 重新启动、gate/abort、reset、illegal、容量与溢出、失败回滚、Python/native 相同输出。测试需要一个不满足窗口的反例，确认不会为了凑覆盖而误计数。
 
-## 草稿验证范围
+## 验证范围
 
-[api.pyi](api.pyi) 与 [example.py](example.py) 用于检查参数补全、返回类型、输入根类型和继承是否能用 Python 类型系统表达；[negative.py](negative.py) 标出必须拒绝的误用。它们没有 api.py 实现，不能运行，不验证 native 或真实编辑器体验，也不验证表达式位宽语义。
+[example.py](example.py) 与 [negative.py](negative.py) 现在直接导入真实实现；[api.pyi](api.pyi) 仅重导出真实类型，不维护另一套影子接口。严格类型检查覆盖参数补全、返回类型、输入根类型和继承，不能代替编辑器交互测试或完整表达式位宽语义验收。
 
-类型配置仅对刻意缺少实现的 stub 模块关闭 reportMissingModuleSource；参数、继承和返回类型仍按 strict 检查。
-
-在本目录执行：
+正式类型验收入口：
 
 ```bash
-node /tmp/xreactor-class-coverage-tools/node_modules/pyright/index.js --project pyrightconfig.json
-node /tmp/xreactor-class-coverage-tools/node_modules/pyright/index.js --project pyrightconfig.json negative.py --outputjson
+python3 -B scripts/check_coverage_v2_types.py \
+  --pyright node /tmp/xreactor-class-coverage-tools/node_modules/pyright/index.js
 ```
 
-第二条应失败，并在每个 EXPECT_ERROR 行报告错误。没有标记的错误也要修正，不能只统计错误总数。
-
-2026-10-08 使用 Pyright 1.1.414 验证接口的严格正例及 12 个标记负例。后续复用修订的实际结果单独保存在 `/tmp/xreactor-coverage-v2-ob2uhbua/coverage-reuse-verification.json`；此前 `/tmp/xreactor-coverage-v2-ob2uhbua/trigger-bins-verification.json` 记录属于修订前版本。类型结果不代替未来完整 pattern bin 实现测试。
+运行验收见 [test_trigger_bins.py](../../../tests/coverage/test_trigger_bins.py) 及隔离 xcomm 的 `tests/test_xtrigger.cpp`。本轮记录写入 `/tmp/xreactor-coverage-v2-ob2uhbua/trigger-bins-implementation-verification.json`。早期 `trigger-bins-verification.json`、`coverage-reuse-verification.json` 属于之前草稿/实现状态。

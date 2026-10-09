@@ -19,3 +19,31 @@ class InvalidPoint(CoverPoint[int]):
 transactions.sample(Sample(1, True))  # EXPECT_ERROR
 transactions.sample(None)  # EXPECT_ERROR
 requests.ready.count(StatePoint.busy)  # EXPECT_ERROR
+
+from xreactor import Bundle, RisingEdge, xtrigger
+from xreactor.ir import SequenceSpec, XExpr, signal_expr
+from xreactor.triggers import CompiledTrigger
+from examples.coverage.declarative_protocol import Pin, ProtocolBundle
+from examples.coverage.trigger_bins import roundtrip, ProtocolCoverage
+
+class OtherBundle(Bundle):
+    ready: Pin
+
+@xtrigger()
+def other_ready(pins: OtherBundle) -> XExpr:
+    return signal_expr(pins.ready)
+
+def bad_patterns(pins: ProtocolBundle, other: OtherBundle, live: ProtocolCoverage) -> None:
+    roundtrip.with_args(maximum="8")  # EXPECT_ERROR
+    roundtrip.with_args(maxmum=8)  # EXPECT_ERROR
+    roundtrip.with_args(8)  # EXPECT_ERROR
+    roundtrip.with_args(maximum=8).bind(other)  # EXPECT_ERROR
+    live.bind(pins=other, sample=RisingEdge(pins.clock))  # EXPECT_ERROR
+    live.completions.count(other_ready)  # EXPECT_ERROR
+    live.completions.count(Bin.pattern(other_ready))  # EXPECT_ERROR
+    live.completions.count("tag_one")  # EXPECT_ERROR
+    Bin.pattern(roundtrip, at_least="10")  # EXPECT_ERROR
+    roundtrip(pins, maximum="8")  # EXPECT_ERROR
+    declared: SequenceSpec = roundtrip(pins)  # EXPECT_ERROR
+    bound: CompiledTrigger = roundtrip  # EXPECT_ERROR
+    _ = declared, bound

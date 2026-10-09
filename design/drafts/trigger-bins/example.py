@@ -1,14 +1,12 @@
-"""Type-checkable API proposal; api.pyi has no runtime implementation."""
+"""Type-checkable example against the implemented experimental API."""
 
 from xreactor import RisingEdge
 from xreactor.ir import Sequence, SequenceSpec, Wait, Within, XExpr, signal_expr
 from xreactor.triggers import CompiledTrigger, ConditionMode
 from examples.coverage.declarative_protocol import ProtocolBundle
 
-from api import (
-    Bin, PatternBin, SignalCoverGroup, TemporalCoverPoint,
-    TriggerPattern, covergroup, xtrigger,
-)
+from xreactor import xtrigger, TriggerDefinition
+from xreactor.declarative import Bin, PatternBin, SignalCoverGroup, TemporalCoverPoint, covergroup
 
 
 @xtrigger(mode=ConditionMode.EACH_SAMPLE)
@@ -59,7 +57,7 @@ def bind_and_read(pins: ProtocolBundle, coverage: ProtocolCoverage) -> int:
 
 
 def bind_specialization(pins: ProtocolBundle) -> CompiledTrigger:
-    pattern: TriggerPattern[ProtocolBundle] = roundtrip.with_args(maximum=8)
+    pattern: TriggerDefinition[ProtocolBundle, ...] = roundtrip.with_args(maximum=8)
     return pattern.bind(pins, sample=RisingEdge(pins.clock))
 
 

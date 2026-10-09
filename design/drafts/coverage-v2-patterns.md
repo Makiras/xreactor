@@ -1,6 +1,6 @@
 # Coverage v2 共享时序程序与 C++ 执行设计草稿
 
-状态：讨论稿，2026-10-08，目标接口尚未实现。设计与代码实验位于 `/tmp/xreactor-coverage-v2-ob2uhbua/xreactor` 的 `coverage-v2` 分支。本文更新时序覆盖方向；现有运行示例仍以[实验指南](../../docs/guides/coverage-v2.md)为准。
+状态：设计草稿，2026-10-09；每 bin 完整程序已有实验实现，程序回收与完整表达式类型尚未实现。设计与代码实验位于 `/tmp/xreactor-coverage-v2-ob2uhbua/xreactor` 的 `coverage-v2` 分支。本文更新时序覆盖方向；运行新路径见 [trigger bins 实验指南](../../docs/guides/coverage-v2-trigger-bins.md)，早期快照/事务路径见[实验指南](../../docs/guides/coverage-v2.md)。
 
 **同一份时序定义可以用于等待、持续计数或生成观测记录。C++ 负责连续采样、时序推进和计数；Python 负责类声明、类型检查、绑定和报告。** 新设计按覆盖语义向 xcomm 提出引擎需求，现有 ABI v3 用来说明实现起点。当前交付范围与后续讨论项按下面的优先级区分。
 
@@ -39,7 +39,7 @@ Trigger 使用这个定义等待一次完成：
 await roundtrip(pins)
 ```
 
-Coverage 使用相同定义持续累计完成次数。以下是拟议接口，没有实际导出：
+Coverage 使用相同定义持续累计完成次数。以下接口已经在临时分支实验导出：
 
 ```python
 class RoundTripPoint(TemporalCoverPoint[ProtocolBundle]):
@@ -86,7 +86,7 @@ class RepeatedRequestPoint(TemporalCoverPoint[ProtocolBundle]):
 
 所以 Bin.pattern 是可选的覆盖配置，不强迫用户为每个时序条件多写一层包装。编译器按 point 槽位和属性名登记覆盖身份；同一个 xtrigger 被多个 bin 引用时，不把名称、计数或 owner 写回共享定义。
 
-下一步如何修改临时分支，具体接口、类型检查草稿及分批验收见[分支实施方案](trigger-bins/README.md)。其中补充了参数绑定、采样冲突、重复引用、继承和 FSM 终态选择的规则。类型草稿不提供运行时实现。
+下一步如何修改临时分支，具体接口、类型检查草稿及分批验收见[分支实施方案](trigger-bins/README.md)。其中补充了参数绑定、采样冲突、重复引用、继承和 FSM 终态选择的规则。类型例子现已直接检查真实实现；程序生命周期及表达式类型章节仍是设计提案。
 
 Trigger 使用匹配结果通知等待者；bin 使用匹配结果累计覆盖计数，并附带阈值、normal/ignore/illegal 等策略。Point 组织相关 bins，Group 组织 points 和 Cross。执行层共用 matcher，声明层保留可审核的归属关系。
 
@@ -271,4 +271,4 @@ keyed 模式和广播式时序匹配是两种明确语义：一个响应完成�
 
 字段捕获、动态 key 关联及原生完成记录待用例和语义进一步明确后，再单独确定实现范围。
 
-本设计配有接口和严格类型检查草稿，尚未实现 Bin.pattern、TemporalCoverPoint、SignalCoverGroup 或新的 C++ ABI；前一轮 944 项通过记录仍属于已实现实验，不作为本设计新增能力的验证结果。
+2026-10-09 已在独立 xreactor/xcomm 的 coverage-v2 分支实现 Bin.pattern、TemporalCoverPoint、SignalCoverGroup 与 coverage ABI 4 的每 bin Expr/Sequence/FSM 执行。实际范围及未完成项见 [trigger bins 指南](../../docs/guides/coverage-v2-trigger-bins.md)；本轮验证记录为 `/tmp/xreactor-coverage-v2-ob2uhbua/trigger-bins-implementation-verification.json`。早期 944/948 项记录属于之前实现。

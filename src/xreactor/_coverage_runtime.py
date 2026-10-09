@@ -13,7 +13,7 @@ from typing import Any
 
 from .backend import MemoryBackend, XCommClockBackend, _Watcher
 from .coverage import (BinKind, DefaultMatcher, IllegalHit, RangeMatcher,
-                       TransitionMatcher, ValueMatcher, WildcardMatcher, _tuple_key, _tuple_label,
+                       TransitionMatcher, PatternMatcher, ValueMatcher, WildcardMatcher, _tuple_key, _tuple_label,
                        _DIAGNOSTIC_FIELDS, _empty_pattern_diagnostics, _merge_diagnostics)
 from .events import LogicValue, XPhase
 from .ir import (BoundSignalExpr, ConstantExpr, Next, Sequence, Wait, XExpr,
@@ -24,7 +24,7 @@ from .triggers import (CompiledTrigger, DriveStable, FallingEdge, PhaseTrigger,
 
 
 def configure(trigger, fields, abort, strategy, accumulate, contract,
-              overlap, max_active, diagnostics):
+              overlap, max_active, diagnostics, root=None):
     if not isinstance(trigger, (RisingEdge, FallingEdge, DriveStable,
                                 CompiledTrigger, PythonPredicateTrigger)):
         raise TypeError("coverage trigger must be a phase, compiled pattern, or Python predicate")
@@ -36,7 +36,7 @@ def configure(trigger, fields, abort, strategy, accumulate, contract,
         raise ValueError("coverage contract must be a nonempty stable name/version")
     if isinstance(trigger, PythonPredicateTrigger) and contract is None:
         raise ValueError("Python coverage predicates require a stable contract name/version")
-    if not fields or any(not isinstance(name, str) or not name for name in fields):
+    if (not fields and root is None) or any(not isinstance(name, str) or not name for name in fields):
         raise ValueError("coverage fields must be a nonempty mapping with named sources")
     if not isinstance(overlap, bool):
         raise TypeError("coverage overlap must be bool")
@@ -56,7 +56,7 @@ def configure(trigger, fields, abort, strategy, accumulate, contract,
         raise ValueError("max_active greater than one requires overlap=True")
     return dict(trigger=trigger, fields=dict(fields), abort=abort, strategy=strategy,
                 accumulate=accumulate, contract=contract, overlap=overlap,
-                max_active=max_active or 1, diagnostics=diagnostics)
+                max_active=max_active or 1, diagnostics=diagnostics, root=root)
 
 
 def _shape(value):
@@ -113,9 +113,18 @@ class _Collector:
         self.pattern = isinstance(self.trigger, CompiledTrigger) and isinstance(
             self.trigger.program, (SequenceSpec, FsmSpec))
         self.attempts = []
+        self.bin_patterns = {}
+        for point in group.definition.points:
+            for named in point._named_bins:
+                spec = named.spec.matcher
+                if isinstance(spec, PatternMatcher):
+                    trigger = CompiledTrigger(named.name, self.config["root"], spec.program,
+                                              self.phase_trigger, spec.mode)
+                    self.bin_patterns[(point.name, named.name)] = dict(
+                        trigger=trigger, spec=spec, attempts=[], watcher=_Watcher(trigger, 0))
         self.pattern_keys = ([(None, None)] if self.pattern else []) + [
             (point.name, item.name) for point in group.definition.points for item in point._named_bins
-            if isinstance(item.spec.matcher, TransitionMatcher)]
+            if isinstance(item.spec.matcher, (TransitionMatcher, PatternMatcher))]
         self.summary = ({key: _empty_pattern_diagnostics() for key in self.pattern_keys}
                         if self.config["diagnostics"] == "summary" else None)
         self.base_diagnostics = None
@@ -145,7 +154,7 @@ class _Collector:
 
     def start(self):
         g = self.group
-        required = {point.source or point.name for point in g.definition.points}
+        required = {point.source or point.name for point in g.definition.points if not point.is_pattern}
         for item in (g.definition, *g.definition.points, *g.definition.crosses):
             if item.iff is not None:
                 required.add(item.iff.source)
@@ -185,8 +194,11 @@ class _Collector:
         b = self.backend
         if not isinstance(b, XCommClockBackend) or not hasattr(b._engine, "CoverageVersion"):
             raise NotImplementedError("backend does not provide native coverage ABI")
-        if b._engine.CoverageVersion() != 3:
-            raise NotImplementedError("native coverage requires ABI version 3; rebuild xcomm")
+        version = b._engine.CoverageVersion()
+        if version not in (3, 4):
+            raise NotImplementedError("native coverage requires ABI version 3 or 4; rebuild xcomm")
+        if self.bin_patterns and version != 4:
+            raise NotImplementedError("native trigger bins require ABI version 4; rebuild xcomm")
         if isinstance(self.trigger, PythonPredicateTrigger):
             raise NotImplementedError("Python predicates require Python sampling")
         x, engine = b._xspcomm, b._engine
@@ -239,15 +251,34 @@ class _Collector:
         for point in self.group.definition.points:
             item = x.XCoverageItem()
             point_ids[point.name] = len(items)
-            expr = source(point.source or point.name)
-            item.signal, item.gate = expr.signal, gate(point.iff)
+            expr = None if point.is_pattern else source(point.source or point.name)
+            if point.is_pattern:
+                item.pattern = True
+            else:
+                item.signal = expr.signal
+            item.gate = gate(point.iff)
             items.push_back(item)
             for named in point._named_bins:
                 spec = x.XCoverageBin()
                 spec.item = point_ids[point.name]
                 spec.kind = list(BinKind).index(named.spec.kind)
                 matcher = named.spec.matcher
-                if isinstance(matcher, ValueMatcher):
+                if isinstance(matcher, PatternMatcher):
+                    self.native_pattern_ids[len(bins) + 1] = (point.name, named.name)
+                    program, root = matcher.program, self.config["root"]
+                    spec.overlap, spec.max_active = matcher.overlap, matcher.max_active
+                    spec.mode = b._native_condition_mode(matcher.mode)
+                    if isinstance(program, SequenceSpec):
+                        spec.program_kind = 1
+                        spec.steps = b._lower_sequence(program, root)
+                    elif isinstance(program, FsmSpec):
+                        spec.program_kind = 2
+                        spec.state_count, spec.start_state, spec.transitions = b._lower_fsm(program, root)
+                        names = b._fsm_terminals(program)
+                        spec.terminals = x.XUInt32Vector([names.index(name) for name in matcher.terminals])
+                    else:
+                        spec.root = b._lower_expr(program, root)
+                elif isinstance(matcher, ValueMatcher):
                     spec.root = lower(values(expr, matcher.values))
                 elif isinstance(matcher, RangeMatcher):
                     condition = ConstantExpr(False)
@@ -332,21 +363,46 @@ class _Collector:
                 target = target.setdefault(part, {})
             target[parts[-1]] = _read(signal)
         for _ in range(completions):
+            hits = {} if self.bin_patterns else None
+            group_enabled = self.group.definition.iff is None or self.group.definition.iff.enabled(sample)
+            for point in self.group.definition.points:
+                if not point.is_pattern:
+                    continue
+                enabled = group_enabled and (point.iff is None or point.iff.enabled(sample))
+                for named in point._named_bins:
+                    key = (point.name, named.name)
+                    state = self.bin_patterns[key]
+                    if not enabled:
+                        self._clear_bin(state, key, "cleared")
+                        continue
+                    spec, trigger = state["spec"], state["trigger"]
+                    if isinstance(spec.program, (SequenceSpec, FsmSpec)):
+                        count = self._advance_attempts(trigger, state["attempts"], spec.overlap,
+                                                       spec.max_active, key, spec.terminals)
+                    else:
+                        count = int(self.matcher._match(state["watcher"]) is not None)
+                    hits[key] = count
             self.group._sample(sample, metadata={"tick": tick, "phase": phase.name}, details=False,
-                               diagnostics=self.summary)
+                               diagnostics=self.summary, pattern_hits=hits)
 
     def _advance_pattern(self):
-        """Independent attempts share the ordinary MemoryBackend progression code."""
-        previous = bool(self.attempts)
-        stats = self.summary.get((None, None)) if self.summary is not None else None
-        completions = 0
-        remaining = []
-        for attempt in self.attempts:
-            matched = self.matcher._match(attempt) is not None
-            failed = (attempt.sequence.failed if isinstance(self.trigger.program, SequenceSpec)
-                      else not matched and attempt.fsm.current == self.trigger.program.start)
+        return self._advance_attempts(self.trigger, self.attempts, self.config["overlap"],
+                                      self.config["max_active"], (None, None))
+
+    def _advance_attempts(self, trigger, attempts, overlap, max_active, key, terminals=()):
+        """Reuse the ordinary trigger interpreter for independent attempts."""
+        previous = bool(attempts)
+        stats = self.summary.get(key) if self.summary is not None else None
+        completions, remaining = 0, []
+        def selected(event):
+            return event is not None and (not terminals or event[3] in terminals)
+        for attempt in attempts:
+            event = self.matcher._match(attempt)
+            matched = event is not None
+            failed = (attempt.sequence.failed if isinstance(trigger.program, SequenceSpec)
+                      else not matched and attempt.fsm.current == trigger.program.start)
             if matched:
-                completions += 1
+                completions += int(selected(event))
                 if stats is not None:
                     stats["completed"] += 1
             elif failed:
@@ -354,26 +410,33 @@ class _Collector:
                     stats["expired" if attempt.sequence.expired else "failed"] += 1
             else:
                 remaining.append(attempt)
-        self.attempts = remaining
-        if self.config["overlap"] or not previous:
-            candidate = _Watcher(self.trigger, 0)
-            matched = self.matcher._match(candidate) is not None
+        attempts[:] = remaining
+        if overlap or not previous:
+            candidate = _Watcher(trigger, 0)
+            event = self.matcher._match(candidate)
+            matched = event is not None
             progress = (bool(candidate.sequence.index or candidate.sequence.age or candidate.sequence.held)
-                        if isinstance(self.trigger.program, SequenceSpec) else
-                        candidate.fsm.current != self.trigger.program.start)
+                        if isinstance(trigger.program, SequenceSpec) else
+                        candidate.fsm.current != trigger.program.start)
             if matched or progress:
-                if len(remaining) >= self.config["max_active"]:
+                if len(attempts) >= max_active:
                     self.group._collection_complete = False
                     raise RuntimeError("coverage active pattern capacity exhausted")
                 if stats is not None:
                     stats["started"] += 1
-                    stats["peak_active"] = max(stats["peak_active"], len(remaining) + 1)
+                    stats["peak_active"] = max(stats["peak_active"], len(attempts) + 1)
                     stats["completed"] += int(matched)
                 if matched:
-                    completions += 1
+                    completions += int(selected(event))
                 else:
-                    remaining.append(candidate)
+                    attempts.append(candidate)
         return completions
+
+    def _clear_bin(self, state, key, reason):
+        if self.summary is not None:
+            self.summary[key][reason] += len(state["attempts"])
+        state["attempts"].clear()
+        state["watcher"] = _Watcher(state["trigger"], 0)
 
     def _clear_python_history(self, reason):
         if self.summary is not None:
@@ -384,13 +447,15 @@ class _Collector:
         self.attempts.clear()
         self.watcher = _Watcher(self.trigger, 0)
         self.group._history.clear()
+        for key, state in self.bin_patterns.items():
+            self._clear_bin(state, key, reason)
 
     def publish_diagnostics(self):
         patterns = []
         if self.summary is not None:
             for (point, name), stats in self.summary.items():
                 identity = ({"kind": "trigger"} if point is None else
-                            {"kind": "transition", "point": point, "bin": name})
+                            {"kind": "pattern" if (point, name) in self.bin_patterns else "transition", "point": point, "bin": name})
                 patterns.append({**identity, **stats})
         current = dict(collected_runs=int(self.summary is not None),
                        uncollected_runs=int(self.summary is None), patterns=patterns)
@@ -464,8 +529,10 @@ class _Collector:
             for i in range(0, len(values), 5):
                 index, step, age, held, state = values[i:i + 5]
                 key = self.native_pattern_ids[index]
-                if key == (None, None) and isinstance(self.trigger.program, FsmSpec):
-                    progress = {"state": self.trigger.program.states[state][0]}
+                program = (self.trigger.program if key == (None, None) else
+                           self.bin_patterns[key]["spec"].program if key in self.bin_patterns else None)
+                if isinstance(program, FsmSpec):
+                    progress = {"state": program.states[state][0]}
                 else:
                     progress = dict(step=step, age=age, held=held)
                 self._add_progress(result, key, progress)
@@ -478,6 +545,12 @@ class _Collector:
             for key, states in self.group._history.items():
                 for state in states:
                     self._add_progress(result, key, dict(step=state.index, age=state.age, held=state.held))
+            for key, state in self.bin_patterns.items():
+                for attempt in state["attempts"]:
+                    progress = ({"state": attempt.fsm.current} if isinstance(state["spec"].program, FsmSpec)
+                                else dict(step=attempt.sequence.index, age=attempt.sequence.age,
+                                          held=attempt.sequence.held))
+                    self._add_progress(result, key, progress)
         return result
 
     @staticmethod

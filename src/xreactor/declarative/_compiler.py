@@ -9,9 +9,12 @@ from types import MappingProxyType
 from typing import Generic, TypeVar, get_args, get_origin, get_type_hints
 from weakref import WeakKeyDictionary
 
+from ..decorators import TriggerDefinition
+from ..ir import program_signal_paths
+
 from ..coverage import CoverGroupDef, CoverPointDef, CrossDef, Iff as CoreIff, OverlapPolicy
 from ._declarations import (
-    BinRule, BinSelection, CoverPoint, CoverageFragment, CoverageReferenceError, Cross,
+    Bin, BinRule, BinSelection, CoverPoint, TemporalCoverPoint, CoverageFragment, CoverageReferenceError, Cross,
     DefinitionError, FieldRef, Gate, scalar_type,
 )
 
@@ -44,7 +47,7 @@ def _generic_type(cls, markers, model, path):
     for base in cls.__mro__:
         for generic in vars(base).get("__orig_bases__", ()):
             if get_origin(generic) in markers:
-                found.update(get_args(generic))
+                found.update(arg for arg in get_args(generic) if isinstance(arg, type))
     if len(found) != 1 or not isinstance(next(iter(found)), type):
         _fail(model, path, "E_TYPE", "provide one concrete and invariant generic type")
     return next(iter(found))
@@ -178,7 +181,8 @@ class CompiledGroup(Generic[S]):
         view = self.review_dict()
         lines = [f"group {view['schema_id']}", f"  sample: {view['sample_type']}"]
         for point in view["points"]:
-            lines.append(f"  point {point['name']}: {point['value_type']} <- {'.'.join(point['field'])}")
+            source = ".".join(point["field"]) if point["field"] else "live programs"
+            lines.append(f"  point {point['name']}: {point['value_type']} <- {source}")
             lines.append(f"    declared at {point['origin']}")
             lines.append(f"    goal={point['goal']} weight={point['weight']} iff={point['iff']}")
             for bin in point["bins"]:
@@ -221,15 +225,16 @@ class CompiledGroup(Generic[S]):
 
 
 def compile_group(model):
-    from ._runtime import CoverGroup
+    from ._runtime import CoverGroup, SignalCoverGroup
+    live = issubclass(model, SignalCoverGroup)
     signature = _signature(model)
     if model in _CACHE:
         old_signature, compiled = _CACHE[model]
         if old_signature != signature:
             _fail(model, "declaration", "E_FROZEN", "compiled declarations changed; define a new subclass")
         return compiled
-    sample_type = _generic_type(model, (CoverGroup, CoverageFragment), model, "sample")
-    shape = _sample_shape(sample_type, model)
+    sample_type = _generic_type(model, (CoverGroup, SignalCoverGroup, CoverageFragment), model, "sample")
+    shape = {"type": _type_id(sample_type), "kind": "live"} if live else _sample_shape(sample_type, model)
     members, origins, aliases, cross_aliases, options = {}, {}, {}, {}, {}
     reserved = set(dir(CoverGroup)) | {"runtime", "snapshot"}
     declarations = [base for base in reversed(model.__mro__)
@@ -268,6 +273,7 @@ def compile_group(model):
                     _fail(model, name, "E_REUSED_CROSS", "construct a separate Cross for each slot")
                 cross_aliases[value] = name
     point_defs, cross_defs, reviews, rules, used_fields = [], [], [], {}, {}
+    pattern_definitions = {}
 
     def gate(gate_value, slot):
         if gate_value is None:
@@ -281,18 +287,31 @@ def compile_group(model):
     for name, point in sorted(members.items()):
         if not isinstance(point, CoverPoint):
             continue
-        value_type = _generic_type(type(point), (CoverPoint,), model, name)
-        if not scalar_type(value_type):
-            _fail(model, name, "E_POINT_TYPE", "point must have a supported scalar type")
-        field = point.source or FieldRef(sample_type, (name,), value_type)
-        field = _checked_field(field, sample_type, model, name)
-        if field.value_type is not value_type:
-            _fail(model, name, "E_FIELD_TYPE", "point type differs from bound field type")
-        used_fields[field.path] = field
+        temporal = isinstance(point, TemporalCoverPoint)
+        value_type = _generic_type(type(point), (CoverPoint, TemporalCoverPoint), model, name)
+        if temporal != live:
+            _fail(model, name, "E_POINT_TYPE", "SignalCoverGroup requires TemporalCoverPoint; snapshot groups require value points")
+        if temporal:
+            if value_type is not sample_type or point.source is not None:
+                _fail(model, name, "E_FIELD_ROOT", "pattern point must use this live root without a value source")
+            field = None
+        else:
+            if not scalar_type(value_type):
+                _fail(model, name, "E_POINT_TYPE", "point must have a supported scalar type")
+            field = point.source or FieldRef(sample_type, (name,), value_type)
+            field = _checked_field(field, sample_type, model, name)
+            if field.value_type is not value_type:
+                _fail(model, name, "E_FIELD_TYPE", "point type differs from bound field type")
+            used_fields[field.path] = field
         bins, bin_origins, bin_aliases, point_options = {}, {}, {}, {}
         for base in reversed(type(point).__mro__):
             point_options.update(vars(base).get("_coverage_point_options", {}))
             for bin_name, rule in vars(base).items():
+                reference = rule
+                if isinstance(rule, TriggerDefinition):
+                    if not temporal:
+                        _fail(model, f"{name}.{bin_name}", "E_BIN_TYPE", "xtrigger bins require TemporalCoverPoint")
+                    rule = Bin.pattern(rule)
                 if bin_name in bins and not isinstance(rule, BinRule):
                     _fail(model, f"{name}.{bin_name}", "E_OVERRIDE", "cannot remove an inherited bin")
                 if not isinstance(rule, BinRule):
@@ -301,6 +320,16 @@ def compile_group(model):
                     _fail(model, f"{name}.{bin_name}", "E_RESERVED", "bin shadows the point API")
                 if rule.value_type is not value_type:
                     _fail(model, f"{name}.{bin_name}", "E_BIN_TYPE", "bin type differs from point type")
+                if temporal:
+                    if rule._pattern is None:
+                        _fail(model, f"{name}.{bin_name}", "E_BIN_TYPE", "pattern point requires xtrigger bins")
+                    if reference in bin_aliases and bin_aliases[reference] != bin_name:
+                        _fail(model, f"{name}.{bin_name}", "E_REUSED_BIN", "ambiguous repeated definition; use separate Bin.pattern configurations")
+                    for path in program_signal_paths(rule.spec.matcher.program):
+                        used_fields[path] = FieldRef(sample_type, path, int)
+                    pattern_definitions[(name, bin_name)] = rule._pattern
+                    bins[bin_name], bin_origins[bin_name], bin_aliases[reference] = rule.spec, base, bin_name
+                    continue
                 owner = _BIN_OWNERS.get(rule)
                 if owner is not None and owner != (base, bin_name):
                     _fail(model, f"{name}.{bin_name}", "E_REUSED_BIN", "bin object already declares another bin")
@@ -308,14 +337,14 @@ def compile_group(model):
                 bins[bin_name], bin_origins[bin_name], bin_aliases[rule] = rule.spec, base, bin_name
         rules[name] = MappingProxyType(bin_aliases)
         try:
-            definition = CoverPointDef(name, dict(sorted(bins.items())), source=".".join(field.path),
+            definition = CoverPointDef(name, dict(sorted(bins.items())), source=None if field is None else ".".join(field.path),
                                        iff=gate(point.iff, name), weight=point.weight, goal=point.goal,
                                        overlap=point.overlap or point_options.get("overlap", OverlapPolicy.WARN),
                                        description=point_options.get("description", ""))
         except ValueError as error:
             _fail(model, name, "E_SCHEMA", str(error))
         point_defs.append(definition)
-        reviews.append({"name": name, "field": list(field.path), "value_type": _type_id(value_type),
+        reviews.append({"name": name, "field": [] if field is None else list(field.path), "value_type": "event" if temporal else _type_id(value_type),
                         "iff": None if definition.iff is None else definition.iff.to_dict(),
                         "goal": point.goal, "weight": point.weight,
                         "origin": _origin(origins[name]), "bins": [
@@ -364,7 +393,9 @@ def compile_group(model):
     input_data = {"frontend": "declarative-v2-experiment", "sample": shape,
                   "observer_contract_explicit": bool(options.get("contract")),
                   "bindings": {name: list(point._source_parts) for name, point in
-                               ((point.name, point) for point in point_defs)}}
+                               ((point.name, point) for point in point_defs if not point.is_pattern)}}
+    if live:
+        input_data["live_fields"] = [list(path) for path in sorted(used_fields)]
     review = {"schema_id": schema_id, "sample_type": _type_id(sample_type), "points": reviews,
               "iff": None if schema.iff is None else schema.iff.to_dict(), "contract": contract,
               "crosses": [{**cross.definition.to_dict(), "origin": _origin(origins[cross.definition.name]),
@@ -372,6 +403,7 @@ def compile_group(model):
     compiled = CompiledGroup(schema, sample_type, contract, sha256(_json(input_data).encode()).hexdigest(),
                              _json(input_data), _json(review), MappingProxyType(aliases),
                              MappingProxyType(cross_aliases), MappingProxyType(rules),
-                             tuple(used_fields[key] for key in sorted(used_fields)), _validation_plan(sample_type))
+                             tuple(used_fields[key] for key in sorted(used_fields)),
+                             MappingProxyType(pattern_definitions) if live else _validation_plan(sample_type))
     _CACHE[model] = (_signature(model), compiled)
     return compiled

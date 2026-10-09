@@ -6,16 +6,16 @@ and its execution/counting implementation remain available.
 from ..coverage import IllegalPolicy, OverlapPolicy
 from ._compiler import CompiledGroup
 from ._declarations import (
-    Bin, BinRule, BinSelection, BoundCross, BoundPoint, CoverPoint,
+    Bin, BinRule, PatternBin, BinSelection, BoundCross, BoundPoint, CoverPoint, TemporalCoverPoint,
     CoverageFragment, CoverageReferenceError, Cross, DefinitionError,
     FieldRef, Fields, Gate, Iff, PointDeclaration, SampleTypeError,
     SignalBinding, SignalBindingBase, covergroup, coverpoint, wire,
 )
-from ._runtime import CoverGroup, CoverageSnapshot
+from ._runtime import CoverGroup, SignalCoverGroup, CoverageSnapshot
 
 __all__ = [
-    "Bin", "BinRule", "BinSelection", "BoundCross", "BoundPoint", "CompiledGroup",
-    "CoverGroup", "CoverPoint", "CoverageFragment", "CoverageReferenceError",
+    "Bin", "BinRule", "PatternBin", "BinSelection", "BoundCross", "BoundPoint", "CompiledGroup",
+    "CoverGroup", "SignalCoverGroup", "CoverPoint", "TemporalCoverPoint", "CoverageFragment", "CoverageReferenceError",
     "CoverageSnapshot", "Cross", "DefinitionError", "FieldRef", "Fields", "Gate",
     "Iff", "IllegalPolicy", "OverlapPolicy", "PointDeclaration", "SampleTypeError",
     "SignalBinding", "SignalBindingBase", "covergroup", "coverpoint", "wire",

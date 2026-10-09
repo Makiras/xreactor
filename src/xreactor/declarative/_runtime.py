@@ -1,7 +1,7 @@
 """Typed authoring API backed by the existing CoverGroup and native collector."""
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Sequence, Mapping
 from dataclasses import dataclass
 from hashlib import sha256
 import json
@@ -191,4 +191,39 @@ class CoverGroup(Generic[S]):
                                         "bindings": sorted(bindings, key=lambda item: item["field"]),
                                         "opaque_sources": sorted(item["field"] for item in bindings if item["source_id"] is None)},
                                        ensure_ascii=False, indent=2, sort_keys=True)
+        return self
+
+
+class SignalCoverGroup(CoverGroup[S]):
+    """Live declaration frontend; inherits the single existing counter store."""
+    def sample(self, sample: S) -> None:
+        raise TypeError("SignalCoverGroup samples live programs inside Execution")
+
+    def bind(self, *, pins: S, sample: PhaseTrigger,
+             strategy: Literal["native", "python", "auto"] = "native", abort: object = None,
+             accumulate: bool = False, source_ids: Mapping[str, str] | None = None,
+             diagnostics: Literal["off", "summary"] = "off") -> Self:
+        from ..ir import resolve_path
+        if self._engine._collector is not None:
+            raise RuntimeError("cannot rebind active coverage")
+        if not isinstance(pins, self._compiled.sample_type):
+            raise DefinitionError("E_BINDING_ROOT", type(self).__name__, "live root has another type")
+        for definition in self._compiled._validation.values():
+            definition.bind(pins, sample=sample)
+        sources = {".".join(field.path): resolve_path(pins, field.path) for field in self._compiled._fields}
+        identities = source_ids or {}
+        for name, identity in identities.items():
+            if name not in sources or not isinstance(identity, str) or not identity:
+                raise DefinitionError("E_SOURCE_ID", name, "use stable nonempty identities for used fields")
+        explicit = json.loads(self._compiled._input_json)["observer_contract_explicit"]
+        if not explicit and any(name not in identities for name in sources):
+            raise DefinitionError("E_CONTRACT", type(self).__name__, "provide source_ids or explicit observer contract")
+        bindings = [{"field": name, "width": signal_width(source), "source_id": identities.get(name)} for name, source in sorted(sources.items())]
+        sampling = _sampling_shape(sample, abort, sources, explicit, False, 1)
+        sampling["bindings"] = bindings
+        digest = sha256(_json(sampling).encode()).hexdigest()
+        contract = f"{self._compiled.sampling_contract}|binding={digest}"
+        self._engine.bind(trigger=sample, fields=sources, strategy=strategy, abort=abort,
+                          accumulate=accumulate, contract=contract, root=pins, diagnostics=diagnostics)
+        self._binding_json = json.dumps({"binding_digest": digest, "sampling": sampling}, sort_keys=True)
         return self

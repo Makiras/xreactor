@@ -159,3 +159,6 @@ python3 -B scripts/check_coverage_v2_types.py \
 Python 的 bool 是 int 的子类型，静态工具在某些 lambda 上下文中会把 bool 返回值提升为 int；定义编译仍会检查真实字段注解并拒绝错误绑定。默认同名绑定不能保证 IDE 同时重命名两个类中的属性。selector 接受普通字段路径，符号代理不构成执行任意 Python 定义代码的安全沙箱。
 
 测试和本机 ABI 验证可以支持这条实现路线，不能作为完整候选 API、所有编辑器体验或真实 DUT 性能的验收结论。
+
+
+2026-10-09 已接入独立 xcomm ABI 4 的每 bin 完整程序实验。直接使用 @xtrigger 定义 bins、Sequence/FSM 独立推进、原生持续计数的用法见 [trigger bins 指南](coverage-v2-trigger-bins.md)。长 Execution 程序回收和完整表达式类型仍未完成。
