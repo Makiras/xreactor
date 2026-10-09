@@ -77,7 +77,7 @@ class Completions(TemporalCoverPoint[ProtocolBundle]):
 
 `CoverageExecutionCount(handle)` 是检查独立 pattern 执行数量的原生查询，排除 group 采样源和值 bins。协议示例的六个 bins 对应五份执行；两个终态 bins 共享一个 FSM。每个 bin 的诊断和 progress 继续显示该 bin 消费的观察过程，不能把这些视图相加当成实际资源数量。
 
-该优化使用 coverage 描述协议 4，保持 schema version 3 和报告契约不变。配套原生库使用 ABI 3；两个版本号分别描述参数协议和 C++ 二进制兼容性。长 Execution 内节点回收、沿途 emit 事件及动态关联仍未实现。
+该优化使用 coverage 描述协议 4，保持 schema version 3 和报告契约不变。配套原生库使用 ABI 3；两个版本号分别描述参数协议和 C++ 二进制兼容性。长 Execution 节点回收与两态 typed 表达式已在配套草稿接通；沿途 emit 事件及动态关联仍未实现。
 
 ## 编译与计数
 
@@ -155,10 +155,10 @@ python -m examples.coverage.picker_adder \
   --report /tmp/picker-adder-coverage.json
 ```
 
-`--dut-path` 指向包含 Adder 包的目录。若构建时使用 `VERBOSE=ON` 保留了中间目录，再加 `--dut-module Adder.UT_Adder`。示例将每组输入保持两个采样，然后插入一个空闲采样；Adder RTL 本身是组合逻辑，Sequence/FSM 描述这里的观察窗口。7 个 bins 共用 3 份原生过程执行和一个采样注册，预期 carry 2 次、no_carry 2 次、完整溢出 Sequence 1 次、高半区结果 2 次。`repeated` bins 保留独立阈值，完整溢出的阈值 2 此时尚未达到。
+`--dut-path` 指向包含 Adder 包的目录。若构建时使用 `VERBOSE=ON` 保留了中间目录，再加 `--dut-module Adder.UT_Adder`。示例将每组输入保持两个采样，然后插入一个空闲采样；Adder RTL 本身是组合逻辑，Sequence/FSM 描述这里的观察窗口。9 个 bins 使用 5 份原生执行和一个采样注册，预期 carry 2 次、no_carry 2 次、完整溢出 Sequence 1 次、高半区结果 2 次；新增 129 位加法关系命中 12 次、128 位 signed-negative 命中 2 次。`repeated` bins 保留独立阈值，完整溢出的阈值 2 此时尚未达到。
 
 ## 尚未完成
 
-长 Execution 内程序节点和缓存的细粒度回收仍待做；当前继续使用 Execution 结束时的既有清理路径。完整的 Bool/Bits、signed、宽运算、cast 类型规则也未实现。资源增长实测与后续实现契约见[程序回收与表达式审查](coverage-v2-engine-audit.md)，X/Z 处理暂缓。本轮复用现有表达式能力，不承诺新的表达式语义或完整 UCIS 兼容。
+配套草稿已补程序回收、有界缓存和两态 Bool/Bits、signed、宽运算、cast，具体规则与实测见[程序回收与表达式审查](coverage-v2-engine-audit.md)。需要同时构建 manifest 固定的新版原生草稿，单独使用适配基线 `83ab5b2` 不具备新增能力。X/Z 处理暂缓；不承诺完整 SystemVerilog 表达式语言或完整 UCIS 兼容。
 
 动态 tag 捕获/关联、完成上下文及 temporal Cross 保留为后续讨论。当前示例按固定 tag 编译匹配；现有 Python TransactionCollector 仍处理动态事务关联。没有新增信号容器、事务引擎、时序 VM 或报告系统。

@@ -161,4 +161,4 @@ Python 的 bool 是 int 的子类型，静态工具在某些 lambda 上下文中
 测试和本机 ABI 验证可以支持这条实现路线，不能作为完整候选 API、所有编辑器体验或真实 DUT 性能的验收结论。
 
 
-2026-10-09 已接入 coverage 描述协议 4 的每 bin 完整程序实验，并适配原生 ABI 3 的 picker/xcomm `xreactor-coverage-v2` 分支。直接使用 @xtrigger 定义 bins、共享 Sequence/FSM 推进、原生持续计数的用法见 [trigger bins 指南](coverage-v2-trigger-bins.md)。长 Execution 程序回收和完整表达式类型仍未完成。
+2026-10-09 已接入 coverage 描述协议 4 的每 bin 完整程序实验，并适配原生 ABI 3 的 picker/xcomm `xreactor-coverage-v2` 分支。直接使用 @xtrigger 定义 bins、共享 Sequence/FSM 推进、原生持续计数的用法见 [trigger bins 指南](coverage-v2-trigger-bins.md)。后续草稿已补长 Execution 程序回收和两态 typed 表达式，详见[实现与实测](coverage-v2-engine-audit.md)；X/Z 处理暂缓。

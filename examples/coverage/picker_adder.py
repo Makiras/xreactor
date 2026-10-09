@@ -54,6 +54,19 @@ def high_result(pins: AdderPins):
     return signal_expr(pins.sum) >= 1 << 127
 
 
+@xtrigger(sample=RisingEdge("clock"), mode=ConditionMode.EACH_SAMPLE)
+def correct_wide_addition(pins: AdderPins):
+    expected = (signal_expr(pins.a).resize(129) + signal_expr(pins.b).resize(129)
+                + signal_expr(pins.cin).resize(129))
+    actual = signal_expr(pins.sum).resize(129) + (signal_expr(pins.cout).resize(129) << 128)
+    return expected == actual
+
+
+@xtrigger(sample=RisingEdge("clock"), mode=ConditionMode.EACH_SAMPLE)
+def negative_signed_result(pins: AdderPins):
+    return signal_expr(pins.sum).as_signed() < 0
+
+
 class Results(TemporalCoverPoint[AdderPins]):
     carry = Bin.pattern(addition_result, terminals=("CARRY",))
     no_carry = Bin.pattern(addition_result, terminals=("NO_CARRY",))
@@ -70,11 +83,17 @@ class UpperHalf(TemporalCoverPoint[AdderPins]):
     repeated = Bin.pattern(high_result, at_least=2)
 
 
+class Arithmetic(TemporalCoverPoint[AdderPins]):
+    correct = correct_wide_addition
+    signed_negative = negative_signed_result
+
+
 @covergroup(schema_id="picker.adder", contract="picker.adder-stable-two-samples/v1")
 class AdderCoverage(SignalCoverGroup[AdderPins]):
     results = Results()
     overflow = Overflow()
     upper_half = UpperHalf()
+    arithmetic = Arithmetic()
 
 
 async def exercise(dut):
@@ -114,7 +133,9 @@ async def exercise(dut):
     assert coverage.overflow.count(Overflow.repeated) == 1
     assert coverage.upper_half.count(UpperHalf.observed) == 2
     assert coverage.upper_half.count(UpperHalf.repeated) == 2
-    assert resources == {"bins": 7, "executions": 3, "registrations": 1}
+    assert coverage.arithmetic.count(Arithmetic.correct) == 12
+    assert coverage.arithmetic.count(Arithmetic.signed_negative) == 2
+    assert resources == {"bins": 9, "executions": 5, "registrations": 1}
     return coverage.report(), resources
 
 

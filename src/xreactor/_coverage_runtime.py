@@ -199,6 +199,12 @@ class _Collector:
             raise
 
     def _start_native(self):
+        if not isinstance(self.backend, XCommClockBackend):
+            raise NotImplementedError("backend does not provide native coverage descriptor protocol")
+        with self.backend._expression_transaction():
+            self._build_native()
+
+    def _build_native(self):
         b = self.backend
         if not isinstance(b, XCommClockBackend) or not hasattr(b._engine, "CoverageVersion"):
             raise NotImplementedError("backend does not provide native coverage descriptor protocol")

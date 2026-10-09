@@ -82,6 +82,8 @@ jobs:
           assert xspcomm.version() == os.environ['EXPECTED_PACKAGE_VERSION']
           assert xspcomm.abi_version() == int(os.environ['EXPECTED_NATIVE_ABI'])
           assert xspcomm.XTriggerEngine.CoverageVersion() == int(os.environ['EXPECTED_COVERAGE_PROTOCOL'])
+          for method in ('CollectExpressions', 'ExprNewBits', 'ExprNewBool', 'ExprEvalBits'):
+              assert hasattr(xspcomm.XTriggerEngine, method), method
           PY
       - run: python -m pytest -q --require-xspcomm
       - name: Run documented command-line examples

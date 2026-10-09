@@ -72,6 +72,9 @@ from .events import (
     XPhase,
 )
 from .ir import (
+    bits,
+    BitsType,
+    BoolType,
     FSM,
     FsmSpec,
     Hold,
@@ -116,6 +119,9 @@ from .triggers import (
 )
 
 __all__ = [
+    "bits",
+    "BitsType",
+    "BoolType",
     "Agent",
     "SimulationNotSettledError",
     "AcceptedDriver",

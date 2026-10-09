@@ -1,6 +1,7 @@
 from typing import assert_type
 
-from xreactor import RisingEdge, TriggerDefinition
+from xreactor import bits, RisingEdge, TriggerDefinition, XExpr
+from xreactor.ir import signal_expr
 from xreactor.declarative import Bin, BinRule, BoundPoint, PatternBin
 from xreactor.triggers import CompiledTrigger
 from examples.coverage.declarative_protocol import ProtocolBundle
@@ -14,6 +15,10 @@ assert_type(Completions.tag_one_fast, BinRule[ProtocolBundle])
 
 
 def observe(pins: ProtocolBundle) -> int:
+    data = signal_expr(pins.response.data)
+    assert_type(data.as_signed(), XExpr)
+    assert_type(data.resize(129) + bits(1, 129), XExpr)
+    assert_type(data.bit_and(255), XExpr)
     assert_type(accepted(pins), CompiledTrigger)
     assert_type(roundtrip(pins, maximum=3), CompiledTrigger)
     fixed: TriggerDefinition[ProtocolBundle, ...] = roundtrip.with_args(maximum=3)

@@ -135,7 +135,7 @@ def native():
     (ConstantExpr(-1), "negative constants"),
     (ConstantExpr(1 << 64), "fit uint64"),
     (UnaryExpr("negate", ConstantExpr(1)), "unary op"),
-    (BinaryExpr("add", ConstantExpr(1), ConstantExpr(2)), "binary op"),
+    (BinaryExpr("unsupported_add", ConstantExpr(1), ConstantExpr(2)), "binary op"),
     (XExpr(), "IR node"),
 ])
 def test_native_expression_errors_do_not_allocate_watchers(native, expression, message):
