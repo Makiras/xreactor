@@ -272,3 +272,6 @@ keyed 模式和广播式时序匹配是两种明确语义：一个响应完成�
 字段捕获、动态 key 关联及原生完成记录待用例和语义进一步明确后，再单独确定实现范围。
 
 2026-10-09 已在独立 xreactor/xcomm 的 coverage-v2 分支实现 Bin.pattern、TemporalCoverPoint、SignalCoverGroup 与 coverage ABI 4 的每 bin Expr/Sequence/FSM 执行。实际范围及未完成项见 [trigger bins 指南](../../docs/guides/coverage-v2-trigger-bins.md)；本轮验证记录为 `/tmp/xreactor-coverage-v2-ob2uhbua/trigger-bins-implementation-verification.json`。早期 944/948 项记录属于之前实现。
+
+
+同 point 内多个 bins 选择同一个过程的不同终态时，临时分支现已共享一次推进，再按终态分发完成数量。独立程序、不同 point 和不同运行策略保留独立历史；不要求每个 bin 拥有独占的执行程序，也不要求整个 point 只有一个 FSM。接口、原生执行数量查询和实际测试见 [实验指南](../../docs/guides/coverage-v2-trigger-bins.md)。沿途 emit 事件仍是后续公共 FSM 扩展。

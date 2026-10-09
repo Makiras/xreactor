@@ -129,7 +129,7 @@ class ResultPoint(TemporalCoverPoint[ProtocolBundle]):
     timeout = Bin.pattern(request_fsm, terminals=("timeout",))
 ```
 
-复用 FsmSpec 中现有终态表及 backend 的稳定 ID 降低，编译器检查选择的终态存在；C++ 不能丢弃完成时的 terminal ID。两个 bins 各自观察完整 FSM，并仅累计所选终态。终态过滤不改变 FSM 运行：到达未选终态也结束本次匹配。若以后改善终态补全，应在公共 FSM 声明中统一改进，再由 coverage 直接复用。
+复用 FsmSpec 中现有终态表及 backend 的稳定 ID 降低，编译器检查选择的终态存在；C++ 不能丢弃完成时的 terminal ID。两个 bins 共用同一次完整 FSM 观察，并分别累计所选终态。终态过滤不改变 FSM 运行：到达未选终态也结束本次匹配。若以后改善终态补全，应在公共 FSM 声明中统一改进，再由 coverage 直接复用。
 
 只有一个终态的 FSM 可以直接作为 bin；多个终态必须显式选择，或传 `all_terminals=True`。终态集合不能为空，不能同时选择集合和全部终态。Expr/Sequence 禁止终态选项。本轮先解决 bin 的完整程序与终态选择。
 
@@ -207,3 +207,6 @@ python3 -B scripts/check_coverage_v2_types.py \
 ```
 
 运行验收见 [test_trigger_bins.py](../../../tests/coverage/test_trigger_bins.py) 及隔离 xcomm 的 `tests/test_xtrigger.cpp`。本轮记录写入 `/tmp/xreactor-coverage-v2-ob2uhbua/trigger-bins-implementation-verification.json`。早期 `trigger-bins-verification.json`、`coverage-reuse-verification.json` 属于之前草稿/实现状态。
+
+
+2026-10-09 后续实验已实现同 point、同程序及同运行策略的共享推进与终态分发。Expr/Sequence/FSM 保留既有语义，所有 consumers 的 counters、阈值和 kind 独立。当前实现、共享边界和审核方式见 [trigger bins 指南](../../../docs/guides/coverage-v2-trigger-bins.md#同一次观察多个结果-bins)，验证记录写入 `/tmp/xreactor-coverage-v2-ob2uhbua/shared-fsm-verification.json`。

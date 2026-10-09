@@ -113,15 +113,23 @@ class _Collector:
         self.pattern = isinstance(self.trigger, CompiledTrigger) and isinstance(
             self.trigger.program, (SequenceSpec, FsmSpec))
         self.attempts = []
-        self.bin_patterns = {}
+        self.bin_patterns, self.pattern_executions = {}, {}
+        pooled = {}
         for point in group.definition.points:
             for named in point._named_bins:
                 spec = named.spec.matcher
                 if isinstance(spec, PatternMatcher):
-                    trigger = CompiledTrigger(named.name, self.config["root"], spec.program,
-                                              self.phase_trigger, spec.mode)
-                    self.bin_patterns[(point.name, named.name)] = dict(
-                        trigger=trigger, spec=spec, attempts=[], watcher=_Watcher(trigger, 0))
+                    key = (point.name, named.name)
+                    identity = (point.name, spec.execution_key())
+                    state = pooled.get(identity)
+                    if state is None:
+                        trigger = CompiledTrigger(named.name, self.config["root"], spec.program,
+                                                  self.phase_trigger, spec.mode)
+                        state = dict(trigger=trigger, spec=spec, attempts=[],
+                                     watcher=_Watcher(trigger, 0), key=key, point=point, bins=[])
+                        pooled[identity] = self.pattern_executions[key] = state
+                    state["bins"].append(key)
+                    self.bin_patterns[key] = state
         self.pattern_keys = ([(None, None)] if self.pattern else []) + [
             (point.name, item.name) for point in group.definition.points for item in point._named_bins
             if isinstance(item.spec.matcher, (TransitionMatcher, PatternMatcher))]
@@ -245,7 +253,7 @@ class _Collector:
             return lower(~expr if iff.invert else expr)
 
         items, bins = x.XCoverageItemVector(), x.XCoverageBinVector()
-        bin_ids, point_ids = {}, {}
+        bin_ids, point_ids, lowered_programs = {}, {}, {}
         if self.pattern:
             self.native_pattern_ids[0] = (None, None)
         for point in self.group.definition.points:
@@ -268,16 +276,22 @@ class _Collector:
                     program, root = matcher.program, self.config["root"]
                     spec.overlap, spec.max_active = matcher.overlap, matcher.max_active
                     spec.mode = b._native_condition_mode(matcher.mode)
+                    execution_key = self.bin_patterns[(point.name, named.name)]["key"]
+                    if execution_key not in lowered_programs:
+                        lowered_programs[execution_key] = (
+                            b._lower_sequence(program, root) if isinstance(program, SequenceSpec) else
+                            b._lower_fsm(program, root) if isinstance(program, FsmSpec) else
+                            b._lower_expr(program, root))
+                    lowered = lowered_programs[execution_key]
                     if isinstance(program, SequenceSpec):
-                        spec.program_kind = 1
-                        spec.steps = b._lower_sequence(program, root)
+                        spec.program_kind, spec.steps = 1, lowered
                     elif isinstance(program, FsmSpec):
                         spec.program_kind = 2
-                        spec.state_count, spec.start_state, spec.transitions = b._lower_fsm(program, root)
+                        spec.state_count, spec.start_state, spec.transitions = lowered
                         names = b._fsm_terminals(program)
                         spec.terminals = x.XUInt32Vector([names.index(name) for name in matcher.terminals])
                     else:
-                        spec.root = b._lower_expr(program, root)
+                        spec.root = lowered
                 elif isinstance(matcher, ValueMatcher):
                     spec.root = lower(values(expr, matcher.values))
                 elif isinstance(matcher, RangeMatcher):
@@ -365,23 +379,22 @@ class _Collector:
         for _ in range(completions):
             hits = {} if self.bin_patterns else None
             group_enabled = self.group.definition.iff is None or self.group.definition.iff.enabled(sample)
-            for point in self.group.definition.points:
-                if not point.is_pattern:
-                    continue
+            for key, state in self.pattern_executions.items():
+                point = state["point"]
                 enabled = group_enabled and (point.iff is None or point.iff.enabled(sample))
-                for named in point._named_bins:
-                    key = (point.name, named.name)
-                    state = self.bin_patterns[key]
-                    if not enabled:
-                        self._clear_bin(state, key, "cleared")
-                        continue
-                    spec, trigger = state["spec"], state["trigger"]
-                    if isinstance(spec.program, (SequenceSpec, FsmSpec)):
-                        count = self._advance_attempts(trigger, state["attempts"], spec.overlap,
-                                                       spec.max_active, key, spec.terminals)
-                    else:
-                        count = int(self.matcher._match(state["watcher"]) is not None)
-                    hits[key] = count
+                if not enabled:
+                    self._clear_bin(state, "cleared")
+                    continue
+                spec, trigger, results = state["spec"], state["trigger"], {}
+                if isinstance(spec.program, (SequenceSpec, FsmSpec)):
+                    count = self._advance_attempts(trigger, state["attempts"], spec.overlap,
+                                                   spec.max_active, key, results=results)
+                else:
+                    count = int(self.matcher._match(state["watcher"]) is not None)
+                for bin_key in state["bins"]:
+                    terminals = point.bins[bin_key[1]].matcher.terminals
+                    hits[bin_key] = sum(results.get(name, 0) for name in set(terminals)) if terminals else count
+                self._mirror_bin_diagnostics(state)
             self.group._sample(sample, metadata={"tick": tick, "phase": phase.name}, details=False,
                                diagnostics=self.summary, pattern_hits=hits)
 
@@ -389,20 +402,23 @@ class _Collector:
         return self._advance_attempts(self.trigger, self.attempts, self.config["overlap"],
                                       self.config["max_active"], (None, None))
 
-    def _advance_attempts(self, trigger, attempts, overlap, max_active, key, terminals=()):
+    def _advance_attempts(self, trigger, attempts, overlap, max_active, key, results=None):
         """Reuse the ordinary trigger interpreter for independent attempts."""
         previous = bool(attempts)
         stats = self.summary.get(key) if self.summary is not None else None
         completions, remaining = 0, []
-        def selected(event):
-            return event is not None and (not terminals or event[3] in terminals)
+        def record(event):
+            if results is not None:
+                terminal = event[3]
+                results[terminal] = results.get(terminal, 0) + 1
         for attempt in attempts:
             event = self.matcher._match(attempt)
             matched = event is not None
             failed = (attempt.sequence.failed if isinstance(trigger.program, SequenceSpec)
                       else not matched and attempt.fsm.current == trigger.program.start)
             if matched:
-                completions += int(selected(event))
+                completions += 1
+                record(event)
                 if stats is not None:
                     stats["completed"] += 1
             elif failed:
@@ -427,16 +443,25 @@ class _Collector:
                     stats["peak_active"] = max(stats["peak_active"], len(attempts) + 1)
                     stats["completed"] += int(matched)
                 if matched:
-                    completions += int(selected(event))
+                    completions += 1
+                    record(event)
                 else:
                     attempts.append(candidate)
         return completions
 
-    def _clear_bin(self, state, key, reason):
+    def _mirror_bin_diagnostics(self, state):
         if self.summary is not None:
-            self.summary[key][reason] += len(state["attempts"])
+            stats = self.summary[state["key"]]
+            for key in state["bins"]:
+                if key != state["key"]:
+                    self.summary[key] = dict(stats)
+
+    def _clear_bin(self, state, reason):
+        if self.summary is not None:
+            self.summary[state["key"]][reason] += len(state["attempts"])
         state["attempts"].clear()
         state["watcher"] = _Watcher(state["trigger"], 0)
+        self._mirror_bin_diagnostics(state)
 
     def _clear_python_history(self, reason):
         if self.summary is not None:
@@ -447,8 +472,8 @@ class _Collector:
         self.attempts.clear()
         self.watcher = _Watcher(self.trigger, 0)
         self.group._history.clear()
-        for key, state in self.bin_patterns.items():
-            self._clear_bin(state, key, reason)
+        for state in self.pattern_executions.values():
+            self._clear_bin(state, reason)
 
     def publish_diagnostics(self):
         patterns = []

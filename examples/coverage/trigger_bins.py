@@ -1,4 +1,4 @@
-"""A complete xtrigger program per bin, bound to the existing live Bundle."""
+"""Complete xtrigger programs with shared execution and separate result bins."""
 from __future__ import annotations
 
 import argparse
@@ -60,6 +60,7 @@ class Completions(TemporalCoverPoint[ProtocolBundle]):
     tag_one = roundtrip  # Defaults: tag=1, maximum=4.
     tag_one_fast = Bin.pattern(roundtrip.with_args(tag=1, maximum=2))
     tag_two_ready = tag_two_then_ready
+    # One FSM observation feeds both result bins; each retains its own counter.
     correct_data = Bin.pattern(checked_tag_one, terminals=("OK",))
     bad_data = Bin.illegal(Bin.pattern(checked_tag_one, terminals=("BAD_DATA",)))
 

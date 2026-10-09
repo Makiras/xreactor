@@ -299,6 +299,12 @@ class PatternMatcher:
                 raise CoverageSchemaError("unknown or missing FSM terminal")
         object.__setattr__(self, "terminals", tuple(self.terminals))
 
+    def execution_key(self):
+        """Process identity; terminal selection belongs to the consuming bin."""
+        shape = self.to_dict()
+        shape.pop("terminals")
+        return json.dumps(shape, sort_keys=True, separators=(",", ":"))
+
     def matches(self, value):
         raise RuntimeError("pattern bins require Execution-owned sampling")
 

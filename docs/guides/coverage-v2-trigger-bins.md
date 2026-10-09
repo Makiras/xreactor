@@ -57,13 +57,35 @@ count = coverage.completions.count(Completions.tag_one)
 
 完整示例同时包含逐拍握手表达式、两个不同窗口的 Sequence、Wait/Within/Hold 组合，以及选择 `OK`/`BAD_DATA` 的 FSM。多终态 FSM 必须指定 `terminals=(...)` 或 `all_terminals=True`；到达未选择的终态也结束该次匹配。ENTER/EACH_SAMPLE/CHANGE 直接沿用普通 trigger 的事件语义。
 
+## 同一次观察，多个结果 bins
+
+同一个 point 中，多个 bins 可以引用相同的完整程序，分别选择它的不同终态：
+
+```python
+class Completions(TemporalCoverPoint[ProtocolBundle]):
+    correct_data = Bin.pattern(checked_tag_one, terminals=("OK",))
+    bad_data = Bin.illegal(Bin.pattern(checked_tag_one, terminals=("BAD_DATA",)))
+```
+
+这两个 bins 共用一次 FSM 推进，C++ 根据结束结果分别增加计数。到达未选择的终态也会结束这次匹配；终态选择不改变过程本身。normal/illegal 属性、覆盖阈值和计数仍各自独立。
+
+编译器按照现有 IR 的规范化内容识别相同过程，忽略终态选择、kind 和阈值。共享限定在同一个 point、同一绑定和采样生命周期内，mode、overlap、max_active 必须一致。两个不同窗口的 Sequence 分别执行；不同 points 的运行历史保持独立。
+
+重叠请求仍各自有匹配状态。一拍内可以有 FAST 一次、SLOW 两次；引擎保留各终态的完成数量，分别分发给选择对应结果的 bins。Expr 和 Sequence 也可以共享同一观察结果，保留原事件模式和步骤语义。
+
+声明写法沿用现有 Bin.pattern，不增加用户必须定义的中间层级。CompiledGroup.explain() 会显示例如 `execution 0 (checked_tag_one): bad_data, correct_data` 的关系。引擎复用现有 CoverageState、MatchState、AdvanceFsm/AdvanceSequence；原生 group 仍只占一份采样注册。
+
+`CoverageExecutionCount(handle)` 是检查独立 pattern 执行数量的原生查询，排除 group 采样源和值 bins。协议示例的六个 bins 对应五份执行；两个终态 bins 共享一个 FSM。每个 bin 的诊断和 progress 继续显示该 bin 消费的观察过程，不能把这些视图相加当成实际资源数量。
+
+该优化保持 coverage 描述符 ABI 4、schema version 3 和报告契约不变。需要使用本实验配套 xcomm 实现才能得到共享执行优化。长 Execution 内节点回收、沿途 emit 事件及动态关联仍未实现。
+
 ## 编译与计数
 
 ```text
 类声明与继承
   -> 现有 CompiledGroup：冻结参数、IR 序列化、schema、explain/diff
   -> 现有 backend lowering：绑定真实信号、编译表达式和步骤
-  -> xcomm coverage ABI 4：每个 bin 的描述符与独立匹配状态
+  -> xcomm coverage ABI 4：共享的过程执行与各 bin 的结果选择
   -> 现有 AdvanceSequence / AdvanceFsm / 表达式求值
   -> 原生累计计数与 CoverageSnapshot
   -> 同一个 CoreCoverGroup 的报告与 CoverageDatabase

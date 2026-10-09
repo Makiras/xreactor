@@ -185,6 +185,8 @@ class CompiledGroup(Generic[S]):
             lines.append(f"  point {point['name']}: {point['value_type']} <- {source}")
             lines.append(f"    declared at {point['origin']}")
             lines.append(f"    goal={point['goal']} weight={point['weight']} iff={point['iff']}")
+            for index, execution in enumerate(point.get("executions", [])):
+                lines.append(f"    execution {index} ({execution['definition']}): {', '.join(execution['bins'])}")
             for bin in point["bins"]:
                 lines.append(f"    {bin['name']}: {bin['kind']} {bin['matcher']} at_least={bin['at_least']}")
                 lines.append(f"      from {bin['origin']}")
@@ -350,6 +352,13 @@ def compile_group(model):
                         "origin": _origin(origins[name]), "bins": [
                             {"name": key, **spec.to_dict(), "origin": _origin(bin_origins[key])}
                             for key, spec in sorted(bins.items())]})
+        if temporal:
+            executions = {}
+            for key, spec in sorted(bins.items()):
+                identity = spec.matcher.execution_key()
+                executions.setdefault(identity, {"owner": key, "definition": pattern_definitions[(name, key)].__name__,
+                                                   "bins": []})["bins"].append(key)
+            reviews[-1]["executions"] = list(executions.values())
 
     def combinations(entries, slots, cross_name):
         if entries is None:
