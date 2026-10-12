@@ -34,6 +34,10 @@ nav:
       - 可选协议视图: guides/protocols.md
   - 覆盖率与运行:
       - Functional coverage: guides/coverage.md
+      - Coverage v2 草稿：类声明: guides/coverage-v2.md
+      - Coverage v2 草稿：协议绑定: guides/coverage-v2-protocol.md
+      - Coverage v2 草稿：xtrigger 与原生适配: guides/coverage-v2-trigger-bins.md
+      - Coverage v2 草稿：程序回收与表达式审查: guides/coverage-v2-engine-audit.md
       - 功能点与跨用例覆盖: guides/functional-points.md
       - 报告与运行产物: guides/verification-flow.md
       - 外部 asyncio 集成: guides/asyncio-and-pytest.md
