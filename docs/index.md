@@ -20,6 +20,9 @@ Agent 封装接口并连接参考模型，Scoreboard 核对事务；Execution �
 动手修改练习。已有经验、只想查某个功能时，
 再使用下方指南。
 
+已有 Toffee 验证环境，准备迁移到采用 xreactor 实现的 Toffee v2 时，阅读
+[Toffee v2 迁移说明](guides/toffee-v2-migration.md)，核对 API 对应关系、采样和模型更新语义。
+
 ## 按使用场景找功能
 
 | 要完成的工作 | 功能指南 |

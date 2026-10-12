@@ -569,6 +569,8 @@ class XCommClockBackend:
         self.clock = clock
         self._xspcomm = xspcomm
         self._engine = xspcomm.XTriggerEngine(clock, capacity)
+        if not hasattr(self._engine, "AcquireClock"):
+            raise RuntimeError("xspcomm was built without XEngine clock ownership support; rebuild xcomm")
         self._native_handles: dict[tuple[int, int], Any] = {}
         self._triggers: dict[tuple[int, int], XTrigger[Any]] = {}
         self._program_cache: dict[tuple[Any, ...], tuple[str, Any]] = {}
@@ -580,17 +582,28 @@ class XCommClockBackend:
         self._owner: object | None = None
 
     def acquire(self, owner: object) -> None:
+        if self._closed:
+            raise RuntimeError("backend is closed")
         if self._owner is not None and self._owner is not owner:
             raise RuntimeError("backend instance already has an active Execution")
+        if self._owner is None and self._native_handles:
+            raise RuntimeError("disarm standalone registrations before entering Execution")
+        self._engine.AcquireClock()
+        self.tick = int(self.clock.GetHalfTick())
+        self.phase = _xcomm_phase(self.clock.GetPhase())
         self._owner = owner
 
     def release(self, owner: object) -> None:
         if self._owner is owner:
+            self._engine.ReleaseClock()
             self._owner = None
 
     def arm(self, trigger: XTrigger[Any]) -> BackendHandle:
         if self._closed:
             raise RuntimeError("backend is closed")
+        # Standalone backend calls hold the same native lease until close().
+        # Execution takes it eagerly in acquire(), before registering work.
+        self._engine.AcquireClock()
         native_phase: Any
         if isinstance(trigger, RisingEdge):
             self._require_clock_source(trigger.source)
@@ -734,6 +747,7 @@ class XCommClockBackend:
     def run_until(self, limit: RunLimit) -> RunResult:
         if self._closed:
             raise RuntimeError("backend is closed")
+        self._engine.AcquireClock()
         wall_time_ns = (
             0
             if limit.max_wall_time_ms is None
@@ -842,9 +856,10 @@ class XCommClockBackend:
     def close(self) -> None:
         if self._closed:
             return
-        if self._coverage_collectors:
-            raise RuntimeError("close the owning Execution before closing its coverage backend")
+        if self._owner is not None or self._coverage_collectors:
+            raise RuntimeError("release the owning Execution before closing its backend")
         self._engine.Clear()
+        self._engine.ReleaseClock()
         self._native_handles.clear()
         self._triggers.clear()
         self._program_cache.clear()

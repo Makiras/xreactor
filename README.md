@@ -43,6 +43,7 @@ PYTHONPATH=src python3 examples/triggers/basic_execution.py
 ## 文档
 
 - [安装](docs/getting-started/installation.md)
+- [Toffee v2 迁移说明](docs/guides/toffee-v2-migration.md)
 - [从零开始的学习路线](docs/getting-started/index.md) · [第一条断言](docs/getting-started/first-test.md)
 - [Trigger](docs/guides/triggers.md)
 - [编译条件、Sequence 和 FSM](docs/guides/compiled-triggers.md)

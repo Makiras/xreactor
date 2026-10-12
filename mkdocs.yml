@@ -42,6 +42,7 @@ nav:
       - 流水输入与阶段重叠: guides/pipeline-examples.md
       - 可运行示例: examples.md
   - 参考:
+      - Toffee v2 迁移说明: guides/toffee-v2-migration.md
       - 功能与回归索引: reference/feature-map.md
       - API: reference/api.md
       - 行为与限制: reference/semantics-and-limitations.md

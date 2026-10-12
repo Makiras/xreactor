@@ -185,8 +185,8 @@ class _Collector:
         b = self.backend
         if not isinstance(b, XCommClockBackend) or not hasattr(b._engine, "CoverageVersion"):
             raise NotImplementedError("backend does not provide native coverage ABI")
-        if b._engine.CoverageVersion() != 3:
-            raise NotImplementedError("native coverage requires ABI version 3; rebuild xcomm")
+        if b._engine.CoverageVersion() != 5:
+            raise NotImplementedError("native coverage requires descriptor version 5; rebuild xcomm")
         if isinstance(self.trigger, PythonPredicateTrigger):
             raise NotImplementedError("Python predicates require Python sampling")
         x, engine = b._xspcomm, b._engine
@@ -232,59 +232,61 @@ class _Collector:
             expr = values(source(iff.source), iff.values)
             return lower(~expr if iff.invert else expr)
 
-        items, bins = x.XCoverageItemVector(), x.XCoverageBinVector()
+        points, bins = x.XCoveragePointVector(), x.XCoverageBinVector()
         bin_ids, point_ids = {}, {}
         if self.pattern:
             self.native_pattern_ids[0] = (None, None)
         for point in self.group.definition.points:
-            item = x.XCoverageItem()
-            point_ids[point.name] = len(items)
+            native_point = x.XCoveragePoint()
+            point_ids[point.name] = len(points)
             expr = source(point.source or point.name)
-            item.signal, item.gate = expr.signal, gate(point.iff)
-            items.push_back(item)
+            native_point.signal, native_point.gate = expr.signal, gate(point.iff)
+            points.push_back(native_point)
             for named in point._named_bins:
                 spec = x.XCoverageBin()
-                spec.item = point_ids[point.name]
+                spec.point_id = point_ids[point.name]
                 spec.kind = list(BinKind).index(named.spec.kind)
                 matcher = named.spec.matcher
                 if isinstance(matcher, ValueMatcher):
-                    spec.root = lower(values(expr, matcher.values))
+                    spec.program.root = lower(values(expr, matcher.values))
                 elif isinstance(matcher, RangeMatcher):
                     condition = ConstantExpr(False)
                     for lo, hi in matcher.ranges:
                         condition = condition | (compare(expr, "ge", lo) & compare(expr, "le", hi))
-                    spec.root = lower(condition)
+                    spec.program.root = lower(condition)
                 elif isinstance(matcher, WildcardMatcher):
                     width = int(expr.signal.W()) or 1
                     if matcher.value >= 1 << width:
-                        spec.root = lower(ConstantExpr(False))
+                        spec.program.root = lower(ConstantExpr(False))
                     else:
                         size = (width + 7) // 8
                         mask = matcher.mask & ((1 << width) - 1)
-                        spec.root = engine.ExprNewMaskedCompareSigConstBytes(
+                        spec.program.root = engine.ExprNewMaskedCompareSigConstBytes(
                             expr.signal, matcher.value.to_bytes(size, "little"),
                             mask.to_bytes(size, "little"))
                 elif isinstance(matcher, TransitionMatcher):
                     self.native_pattern_ids[len(bins) + 1] = (point.name, named.name)
                     program = Sequence(Wait(compare(expr, "eq", matcher.values[0])),
                                        *(Next(compare(expr, "eq", value)) for value in matcher.values[1:]))
-                    spec.steps = b._lower_sequence(program, None)
-                    spec.overlap = matcher.overlap
+                    spec.program.kind = x.XTriggerProgramKind_Sequence
+                    spec.program.steps = b._lower_sequence(program, None)
+                    spec.program.overlap = matcher.overlap
                 elif not isinstance(matcher, DefaultMatcher):
                     raise NotImplementedError(f"unsupported native matcher {type(matcher).__name__}")
                 bin_ids[(point.name, named.name)] = len(bins)
                 bins.push_back(spec)
                 self.bin_names.append((point.name, named.name))
         for cross in self.group.definition._resolved_crosses:
-            item = x.XCoverageItem()
-            item.gate = gate(cross.definition.iff)
-            item.dimensions = x.XUInt32Vector([point_ids[name] for name in cross.definition.points])
-            item_id = len(items)
-            items.push_back(item)
+            native_point = x.XCoveragePoint()
+            native_point.kind = x.XCoveragePointKind_Cross
+            native_point.gate = gate(cross.definition.iff)
+            native_point.dimensions = x.XUInt32Vector([point_ids[name] for name in cross.definition.points])
+            point_id = len(points)
+            points.push_back(native_point)
             for kind, tuples in ((0, cross.eligible), (1, sorted(cross.ignored)), (2, sorted(cross.illegal))):
                 for names in tuples:
                     spec = x.XCoverageBin()
-                    spec.item, spec.kind = item_id, kind
+                    spec.point_id, spec.kind = point_id, kind
                     spec.dimensions = x.XUInt32Vector([bin_ids[(name, value)]
                                             for name, value in zip(cross.definition.points, names)])
                     bins.push_back(spec)
@@ -296,7 +298,7 @@ class _Collector:
         group_gate = gate(self.group.definition.iff)
         self.handle = b.arm(self.trigger)
         try:
-            engine.AttachCoverage(self._native_handle(), items, bins, group_gate, abort_root,
+            engine.AttachCoverage(self._native_handle(), points, bins, group_gate, abort_root,
                                   self.group.illegal_policy.value == "raise", 1024,
                                   self.config["overlap"], self.config["max_active"], self.summary is not None)
         except BaseException:
@@ -304,7 +306,7 @@ class _Collector:
             self.handle = None
             raise
         self.native = True
-        self.last = [0] * (2 + len(items) * 5 + len(bins))
+        self.last = [0] * (2 + len(points) * 5 + len(bins))
 
     def _native_handle(self):
         return self.backend._native_handles[(self.handle.slot, self.handle.generation)]

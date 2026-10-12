@@ -865,6 +865,20 @@ def _matcher_overlaps(left: Matcher, right: Matcher) -> bool:
 
 def _normal_overlaps(named: Sequence[NamedBin]) -> tuple[tuple[str, str], ...]:
     normal = [item for item in named if item.spec.kind is BinKind.NORMAL]
+    # Physical-index matrices often have thousands of distinct value bins.
+    # Invert exact scalar membership instead of comparing every bin pair.
+    # Mixed/custom matchers retain the original general overlap algorithm.
+    if all(type(item.spec.matcher) is ValueMatcher
+           and all(type(value) in (type(None), bool, int, str)
+                   for value in item.spec.matcher.values) for item in normal):
+        owners: dict[Scalar, list[int]] = {}
+        pairs: set[tuple[int, int]] = set()
+        for index, item in enumerate(normal):
+            for value in item.spec.matcher.values:
+                previous = owners.setdefault(value, [])
+                pairs.update((prior, index) for prior in previous)
+                previous.append(index)
+        return tuple((normal[left].name, normal[right].name) for left, right in sorted(pairs))
     result: list[tuple[str, str]] = []
     for index, left in enumerate(normal):
         for right in normal[index + 1 :]:
