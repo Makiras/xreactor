@@ -60,7 +60,7 @@ jobs:
       - name: Install build and report tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends build-essential cmake ninja-build lcov
+          sudo apt-get install -y --no-install-recommends build-essential cmake ninja-build lcov verilator
           python -m pip install 'swig>=4.2,<5' '.[test]'
       - name: Install pinned native backend
         run: python -m pip install ./_deps/xcomm

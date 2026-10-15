@@ -66,6 +66,31 @@ def test_parallel_counts_and_provenance_match_serial_without_case_exports(tmp_pa
                     assert sum(row["count"] for row in evidence.values()) == point["counts"][name]
 
 
+@pytest.mark.parametrize("workers", [1, 3])
+def test_cross_does_not_invent_combinations_and_uses_merged_hit_threshold(tmp_path, workers):
+    text = '''
+import pytest
+from xreactor import Bin, CoverGroupDef, CoverPointDef, CrossDef
+definition = CoverGroupDef('cross-events', (
+    CoverPointDef('a', {'zero': Bin.values(0), 'one': Bin.values(1)}),
+    CoverPointDef('b', {'zero': Bin.values(0), 'one': Bin.values(1)})),
+    (CrossDef('ab', ('a', 'b'), at_least=2),))
+@pytest.mark.parametrize('value', range(4))
+def test_hits(value):
+    group = definition.instantiate('dut')
+    group.sample({'a': value % 2, 'b': 1 - value % 2})
+    assert group.cross_coverage('ab') == 0
+'''
+    output, _ = run_cli(tmp_path, text, workers=workers, options=("--export-coverage-json",))
+    group, = json.loads((output / "functional-coverage.json").read_text())["groups"]
+    cross, = group["crosses"]
+    counts = {tuple(json.loads(key)): count for key, count in cross["counts"].items()}
+    assert counts == {("zero", "zero"): 0, ("zero", "one"): 2,
+                      ("one", "zero"): 2, ("one", "one"): 0}
+    assert cross["coverage"] == 50
+    assert len(group["origins"]) == 4
+
+
 @pytest.mark.parametrize("workers", [1, 2])
 def test_default_has_no_functional_json_or_worker_inputs(tmp_path, workers):
     output, _ = run_cli(tmp_path, SAMPLE, workers=workers)

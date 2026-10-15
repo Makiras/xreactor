@@ -58,7 +58,10 @@ distinct DUT build retains one `native/<build-id>/coverage.dat`, independent of
 worker count. Build identities include the generated module, nearby RTL/native
 libraries and build provenance when available. Different builds remain separate.
 The complete point universe, including toggle counters and zero counts, is
-validated and retained. Derivative LCOV reports select line/branch records.
+validated and retained. Every merge also checks each output counter against the
+exact sum of its inputs before replacing the previous aggregate or deleting
+inputs. Invalid, overflowing or altered counters fail the run and retain the
+available inputs. Derivative LCOV reports select line/branch records.
 
 The adapter uses `coverage_processor` from adjacent `build-provenance.json`,
 falling back to `verilator_coverage` on PATH. Override it with

@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 import shutil
+import sys
 
 import pytest
 
@@ -152,3 +153,58 @@ def test_factory(factory, n):
     output, _ = run_cli(tmp_path, text, workers=2, options=("--native-coverage-tool", TOOL))
     native, = output.glob("native/*/coverage.dat")
     assert sorted(points(native).values()) == [0, 6, 21]
+
+
+@pytest.mark.parametrize("batch", [1, 7, 1000])
+def test_native_batch_boundaries_match_one_shot_merge(tmp_path, batch):
+    (tmp_path / "test_user.sv").write_text("module DUT;\nwire toggle;\nendmodule\n")
+    text = NATIVE.replace("def test_counter(dut, n):", "def test_counter(dut, n, request):")
+    text = text.replace("    dut.count = n", f"    request.config._xreactor_managed_coverage.coverage.native.batch = {batch}\n    dut.count = n")
+    output, _ = run_cli(tmp_path, text, options=("--native-coverage-tool", TOOL))
+    native, = output.glob("native/*/coverage.dat")
+    measured = points(native)
+    assert sorted(measured.values()) == [0, 280, 820]
+    assert not (output / "_workers").exists()
+
+
+@pytest.mark.parametrize("later_batch", [False, True])
+def test_successful_merger_with_wrong_counts_is_rejected_without_consuming_inputs(tmp_path, later_batch):
+    tool = tmp_path / "wrong-count-merger"
+    tool.write_text(f'''#!{sys.executable}
+from pathlib import Path
+import subprocess
+import sys
+subprocess.run([{str(Path(TOOL).resolve())!r}, *sys.argv[1:]], check=True)
+if sys.argv[1] == '--write' and ({not later_batch!r} or any(Path(p).name == 'merged.dat' for p in sys.argv[3:])):
+    output = Path(sys.argv[2])
+    rows = output.read_bytes().splitlines(keepends=True)
+    point, count = rows[1].rstrip(b'\\n').rsplit(b' ', 1)
+    rows[1] = point + b' ' + str(int(count) + 1).encode() + b'\\n'
+    output.write_bytes(b''.join(rows))
+''')
+    tool.chmod(0o755)
+    (tmp_path / "test_user.sv").write_text("module DUT;\nwire toggle;\nendmodule\n")
+    output, result = run_cli(tmp_path, NATIVE, expected=1,
+        options=("--native-coverage-tool", str(tool)))
+    assert "native merger changed coverage counts" in result.stdout + result.stderr
+    assert json.loads((output / "manifest.json").read_text())["state"] == "incomplete"
+    assert not list(output.glob("native/*/coverage.dat"))
+    retained = list(output.glob("_workers/*/native/raw/*.dat"))
+    assert len(retained) == (24 if later_batch else 40)
+    aggregates = list(output.glob("_workers/*/native/*/merged.dat"))
+    if later_batch:
+        aggregate, = aggregates
+        assert sorted(points(aggregate).values()) == [0, 112, 136]
+    else:
+        assert not aggregates
+
+
+def test_native_counter_sum_overflow_is_rejected_before_input_cleanup(tmp_path):
+    (tmp_path / "test_user.sv").write_text("module DUT;\nwire toggle;\nendmodule\n")
+    text = NATIVE.replace("range(1, 41)", "range(1, 3)").replace("dut.count = n", "dut.count = 2**63 - 1")
+    output, result = run_cli(tmp_path, text, expected=1, options=("--native-coverage-tool", TOOL))
+    assert "count sum exceeds the supported counter range" in result.stdout + result.stderr
+    assert json.loads((output / "manifest.json").read_text())["state"] == "incomplete"
+    assert len(list(output.glob("_workers/*/native/raw/*.dat"))) == 2
+    assert not list(output.glob("_workers/*/native/*/merged.dat"))
+    assert not list(output.glob("native/*/coverage.dat"))

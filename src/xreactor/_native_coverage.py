@@ -20,8 +20,8 @@ from ._artifacts import fingerprint, sync_directory
 _POINT = re.compile(rb"C '(.*)' ([0-9]+)\n?\Z")
 
 
-def point_identity(path: Path) -> str:
-    keys = []
+def _point_counts(path: Path) -> dict[bytes, int]:
+    counts = {}
     with path.open("rb") as stream:
         if stream.readline() != b"# SystemC::Coverage-3\n":
             raise ValueError(f"invalid native coverage header: {path}")
@@ -29,10 +29,20 @@ def point_identity(path: Path) -> str:
             match = _POINT.fullmatch(line)
             if match is None or int(match[2]) > 2**63 - 1:
                 raise ValueError(f"invalid native coverage record: {path}")
-            keys.append(match[1])
-    if not keys or len(set(keys)) != len(keys):
-        raise ValueError(f"empty or duplicate native coverage points: {path}")
-    return sha256(b"\n".join(sorted(keys))).hexdigest()
+            if match[1] in counts:
+                raise ValueError(f"duplicate native coverage points: {path}")
+            counts[match[1]] = int(match[2])
+    if not counts:
+        raise ValueError(f"empty native coverage points: {path}")
+    return counts
+
+
+def _point_digest(counts: dict[bytes, int]) -> str:
+    return sha256(b"\n".join(sorted(counts))).hexdigest()
+
+
+def point_identity(path: Path) -> str:
+    return _point_digest(_point_counts(path))
 
 
 @lru_cache(maxsize=128)
@@ -74,9 +84,16 @@ def merge(inputs: list[Path], output: Path, build: dict[str, Any], points: str) 
         raise ValueError("missing native inputs or changed coverage processor")
     if any(_digest(Path(path)) != digest for path, digest in build["files"].items()):
         raise ValueError("native DUT build inputs changed during execution")
+    expected: dict[bytes, int] = {}
     for path in inputs:
-        if point_identity(path) != points:
+        counts = _point_counts(path)
+        if _point_digest(counts) != points:
             raise ValueError(f"native coverage point universe changed: {path}")
+        for point, count in counts.items():
+            expected[point] = expected.get(point, 0) + count
+        del counts
+    if any(count > 2**63 - 1 for count in expected.values()):
+        raise ValueError("native coverage count sum exceeds the supported counter range")
     output.parent.mkdir(parents=True, exist_ok=True)
     descriptor, name = tempfile.mkstemp(prefix=".native-merge-", dir=output.parent)
     os.close(descriptor)
@@ -84,8 +101,13 @@ def merge(inputs: list[Path], output: Path, build: dict[str, Any], points: str) 
     try:
         subprocess.run([build["processor"], "--write", str(pending), *map(str, inputs)],
                        check=True, capture_output=True, text=True)
-        if point_identity(pending) != points:
+        actual = _point_counts(pending)
+        if _point_digest(actual) != points:
             raise ValueError("native merger changed the coverage point universe")
+        if actual != expected:
+            point = next(point for point in expected if actual[point] != expected[point])
+            raise ValueError(f"native merger changed coverage counts: {point!r}: "
+                             f"expected {expected[point]}, got {actual[point]}")
         with pending.open("rb") as stream:
             os.fsync(stream.fileno())
         pending.replace(output)
