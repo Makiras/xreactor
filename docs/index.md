@@ -27,6 +27,7 @@ Agent 封装接口并连接参考模型，Scoreboard 核对事务；Execution �
 
 | 要完成的工作 | 功能指南 |
 | --- | --- |
+| 用统一 CLI 启动多 worker，自动汇总覆盖率并回收中间产物 | [统一 CLI 与多 worker](guides/runner.md) |
 | 启动/退出仿真、复用 backend、配置推进预算 | [Execution 与 Backend](guides/execution-and-backend.md) |
 | 等待时钟、信号条件、超时或多个事件 | [Trigger](guides/triggers.md) |
 | 在 native 引擎识别条件、时间窗口和状态机 | [编译条件、Sequence、FSM](guides/compiled-triggers.md) |

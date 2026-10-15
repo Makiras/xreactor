@@ -33,6 +33,7 @@ nav:
       - Scoreboard 与事务: guides/scoreboard.md
       - 可选协议视图: guides/protocols.md
   - 覆盖率与运行:
+      - 统一 CLI 与多 worker: guides/runner.md
       - Functional coverage: guides/coverage.md
       - Coverage v2 草稿：类声明: guides/coverage-v2.md
       - Coverage v2 草稿：协议绑定: guides/coverage-v2-protocol.md
