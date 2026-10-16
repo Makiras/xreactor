@@ -1095,6 +1095,8 @@ class CoverGroup:
                                         {"kind": "transaction", "name": contract})
         self._diagnostics: Any = None
         self._collection_complete = True
+        from ._coverage_capture import register
+        register(self)
 
     def _new_origin(self) -> None:
         self._origin_id = uuid4().hex
@@ -1613,11 +1615,13 @@ class CoverGroup:
                 raise CoverageMergeError("coverage report items do not match schema")
             ordered[kind] = tuple(expected[name] for name in names)
         definition = replace(definition, **ordered)
-        group = cls(
-            definition,
-            report["instance"],
-            illegal_policy=report.get("illegal_policy", "raise"),
-        )
+        from ._coverage_capture import suspended
+        with suspended():
+            group = cls(
+                definition,
+                report["instance"],
+                illegal_policy=report.get("illegal_policy", "raise"),
+            )
         group.samples = report["samples"]
         group._sampling_contract = _json_value(report.get("sampling_contract"))
         group._sampling_backend = report.get("sampling_backend", "manual")

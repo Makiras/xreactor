@@ -19,6 +19,16 @@ XReactor 是基于 `asyncio` 的 Python 硬件验证框架。测试协程可以�
 python3 -m pip install -e .
 ```
 
+统一运行入口支持自动收集覆盖率、多 worker 合并和中间产物回收：
+
+```bash
+python3 -m pip install -e '.[runner]'
+xreactor run tests/ --workers 8
+```
+
+默认不生成逐例覆盖率 JSON；完整用法和原生 DUT 适配见
+[统一 CLI 与多 worker](docs/guides/runner.md)。
+
 开发与测试依赖：
 
 ```bash
